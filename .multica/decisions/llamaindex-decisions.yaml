@@ -1,0 +1,63 @@
+# LlamaIndex VastbaseVectorStore — 已确认决策
+
+framework: llamaindex
+version: "0.14.22"
+integration_mode: standalone
+coupling_level: low
+issue: DRI-3
+date: 2026-06-16
+
+decisions:
+  - id: D-01
+    category: API风格
+    question: "使用同步还是异步 API？实现全部 13 个方法还是仅 4 个抽象方法？"
+    decision: "全量实现 13 个方法 — 对标 PGVectorStore 的 full parity"
+    status: resolved
+
+  - id: D-02
+    category: 依赖策略
+    question: "是否引入与 reference_backend 相同的依赖栈？"
+    decision: "替换为 pyvastbase 驱动栈 — 仅 pyvastbase >= 0.2.0"
+    status: resolved
+
+  - id: D-03
+    category: 错误处理
+    question: "沿用什么级别的错误处理策略？"
+    decision: "默认宽松模式（initialization_fail_on_error=False），提供参数选择"
+    status: resolved
+
+  - id: D-04
+    category: 连接管理
+    question: "VastbaseVectorStore 的连接生命周期设计？"
+    decision: "实例级连接 — 每个实例在 _initialize() 时 connect()，close() 时 remove_connection()"
+    status: resolved
+
+  - id: D-05
+    category: 全文搜索
+    question: "TEXT_SEARCH 模式的全文搜索实现策略？"
+    decision: "仅全文索引路径 — hybrid_search=True 时自动创建 BM25 全文索引，无索引时抛明确错误"
+    status: resolved
+
+  - id: D-06
+    category: Filter操作符
+    question: "JSONB 操作符 ?| / ?& 的兼容策略？"
+    decision: "先假设兼容（Vastbase 基于 PG 15 内核），集成测试阶段验证"
+    status: resolved
+
+  - id: D-07
+    category: 向量类型
+    question: "use_halfvec 与 Vastbase 版本策略？"
+    decision: "保持与上游一致的 use_halfvec 参数 + check_vb_version((3, 0, 9)) 版本检测"
+    status: resolved
+
+  - id: D-08
+    category: 混合搜索
+    question: "HYBRID 模式实现策略？"
+    decision: "使用 pyvastbase 原生 hybrid_search + RRFRanker RRF 融合"
+    status: resolved
+
+  - id: D-09
+    category: 架构方案
+    question: "方案 1（Thin Wrapper）还是方案 2（Structural Mirror）？"
+    decision: "方案 1: Collection-Centric Thin Wrapper — 预计 ~800 行代码"
+    status: resolved
