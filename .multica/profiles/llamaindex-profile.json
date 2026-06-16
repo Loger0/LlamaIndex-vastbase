@@ -1,0 +1,103 @@
+{
+  "framework": "llamaindex",
+  "version": "0.14.22",
+  "source_repo": "https://github.com/run-llama/llama_index",
+  "integration_mode": "standalone",
+  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
+  "fork_target": null,
+  "coupling_level": "low",
+  "files_to_modify": [],
+  "files_to_create": [
+    "pyproject.toml",
+    "llama_index/vector_stores/vastbase/__init__.py",
+    "llama_index/vector_stores/vastbase/base.py",
+    "llama_index/vector_stores/vastbase/utils.py",
+    "tests/test_vastbase_vector_store.py",
+    "tests/test_integration.py",
+    "tests/test_filter_translation.py",
+    "tests/test_vastbase.py",
+    "tests/test_query_engine.py",
+    "framework-tests/conftest.py",
+    "framework-tests/test_postgres.py",
+    "framework-tests/test_vector_stores_postgres.py",
+    "demo/llamaindex_vastbase_demo.py"
+  ],
+  "abstraction_type": "abstract_class",
+  "base_class": "llama_index.core.vector_stores.types.BasePydanticVectorStore",
+  "reference_backend": "PGVectorStore (llama-index-vector-stores-postgres v0.8.1)",
+  "required_methods": [
+    "client (property, abstract)",
+    "add (abstract)",
+    "delete (abstract)",
+    "query (abstract)",
+    "async_add (optional, overridden)",
+    "adelete (optional, overridden)",
+    "delete_nodes (optional, overridden)",
+    "adelete_nodes (optional, overridden)",
+    "clear (optional, overridden)",
+    "aclear (optional, overridden)",
+    "aquery (optional, overridden)",
+    "get_nodes (optional, overridden)",
+    "aget_nodes (optional, overridden)"
+  ],
+  "test_infrastructure": "full",
+  "test_directory": "tests/",
+  "test_strategy": "extract_official",
+  "demo": {
+    "type": "rag_vector_store_script",
+    "scenarios": [
+      "连接初始化 — 通过环境变量连接 Vastbase 并创建 VastbaseVectorStore 实例",
+      "文档向量摄入 (add) — 创建 TextNode（含 embedding + metadata），批量写入向量存储",
+      "向量相似性搜索 (DEFAULT) — 用 query_embedding 做余弦相似度检索，返回 top_k 结果",
+      "元数据过滤搜索 — 用 MetadataFilter + FilterOperator 过滤结果",
+      "全文搜索 (TEXT_SEARCH, BM25) — 通过 Vastbase 全文索引做关键词检索",
+      "混合搜索 (HYBRID, RRF 融合) — 同时执行向量检索 + 全文检索，RRF 重排合并",
+      "MMR 最大边际相关性重排 — 用 query.mode=MMR 做多样性重排",
+      "删除与清空生命周期 — delete(ref_doc_id) + delete_nodes + clear 完整验证"
+    ],
+    "validation_criteria": "端到端验证完整链路：embedding → insert → DEFAULT/SPARSE/HYBRID/MMR query → retrieve nodes → delete → clear。每个场景输出实际结果供人工审查。"
+  },
+  "convention_references": [
+    "llama-index-vector-stores-postgres/llama_index/vector_stores/postgres/base.py (PGVectorStore 完整实现，1699行)",
+    "llama-index-core/llama_index/core/vector_stores/types.py (BasePydanticVectorStore 抽象接口)",
+    "llama-index-vector-stores-postgres/llama_index/vector_stores/postgres/__init__.py (包导出模式)"
+  ],
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API风格",
+      "question": "使用同步还是异步 API？实现全部 13 个方法还是仅 4 个抽象方法？",
+      "options": [
+        "仅实现 4 个抽象方法 (client, add, delete, query)，异步默认 fallback 到同步",
+        "全量实现 13 个方法（sync + async 对等），对标 PGVectorStore 的 full parity"
+      ],
+      "impact": "决定实现工作量与功能完整度。LlamaIndex 的异步方法默认 fallback 到同步，但 PGVectorStore 全量覆盖了所有方法",
+      "recommendation": "全量实现 13 个方法 — 对标 PGVectorStore 的 full parity，Vastbase adapter 作为独立包应提供完整的 sync/async API",
+      "status": "resolved"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "question": "是否引入与 reference_backend 相同的依赖栈？",
+      "options": [
+        "复刻 PG 依赖栈：sqlalchemy + psycopg2/asyncpg + pgvector",
+        "替换为 pyvastbase 驱动栈：仅 pyvastbase >= 0.2.0 + psycopg >= 3.0"
+      ],
+      "impact": "决定驱动栈复杂度和维护成本。PG 依赖栈需要管理 4 个包的版本兼容，pyvastbase 仅需 2 个",
+      "recommendation": "替换为 pyvastbase 驱动栈 — Vastbase 原生支持向量类型，无需 pgvector 扩展；pyvastbase Collection API 可直接替代 SQLAlchemy ORM",
+      "status": "resolved"
+    },
+    {
+      "id": "D-03",
+      "category": "错误处理",
+      "question": "沿用什么级别的错误处理策略？",
+      "options": [
+        "宽松模式：initialization_fail_on_error=False，setup 阶段错误仅 warning 不中断",
+        "严格模式：initialization_fail_on_error=True，任何 setup 错误立即 raise"
+      ],
+      "impact": "影响部署容错性。宽松模式适合开发环境（自动重试），严格模式适合生产环境（早失败早发现）",
+      "recommendation": "采用 PGVectorStore 一致的策略 — 默认宽松模式 (initialization_fail_on_error=False)，提供参数让用户选择严格模式",
+      "status": "resolved"
+    }
+  ]
+}
