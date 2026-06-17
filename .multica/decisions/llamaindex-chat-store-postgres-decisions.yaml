@@ -1,0 +1,79 @@
+# LlamaIndex ChatStore Vastbase 适配 — 架构决策记录
+# 最后更新: 2026-06-17
+
+decisions:
+  - id: D-01
+    category: API 风格
+    status: confirmed
+    resolution: |
+      同步 + 原生异步双实现（7+7 方法，完全对等上游）。
+      同步使用 pyvastbase Collection API，异步使用 pyvastbase AsyncCollection + AsyncConnections 原生异步。
+      14 个方法全部显式覆写，不继承基类默认 asyncio.to_thread()。
+    rationale: |
+      与上游 PostgresChatStore v0.4.0 行为完全对等（上游使用 asyncpg 原生异步）。
+      pyvastbase 提供 AsyncCollection + AsyncConnections 原生异步能力，可直接使用。
+    conflicts_with: []
+    supersedes: []
+
+  - id: D-02
+    category: 依赖策略
+    status: confirmed
+    resolution: |
+      完全替换为 pyvastbase Collection API。
+      移除 sqlalchemy、psycopg、asyncpg 所有 PG 生态依赖。
+      pyproject.toml 仅依赖 pyvastbase >=0.2.7 + llama-index-core >=0.13.0,<0.15。
+    rationale: |
+      禁止直接 SQL，所有数据库操作通过 pyvastbase Collection API。
+    conflicts_with: []
+    supersedes: []
+
+  - id: D-03
+    category: 错误处理
+    status: confirmed
+    resolution: |
+      与上游 PostgresChatStore 一致：静默 None/空列表，保持 drop-in replacement 语义。
+      key 不存在时 get_messages 返回 []，delete_message/delete_last_message 返回 None。
+      连接失败、Collection 不存在等基础设施异常向上传播。
+    rationale: |
+      保持与上游行为完全一致，用户代码无需修改异常处理逻辑。
+    conflicts_with: []
+    supersedes: []
+
+  - id: D-04
+    category: 数据模型
+    status: confirmed
+    resolution: |
+      单行 per key 方案。Collection Schema: {id (INT64 PK auto_id), key (VARCHAR 512), value (TEXT)}。
+      value 字段存储整个 List[ChatMessage] 的 JSON 序列化字符串。
+      所有数组操作（追加、按索引删除、删最后一条）在 Python 层完成：SELECT → list 操作 → upsert。
+    rationale: |
+      与上游 PostgresChatStore 数据模型一致（一行 per key）。
+      pyvastbase 无原生 ARRAY 类型，无法在数据库层操作数组。
+      禁止直接 SQL，不能使用 PG array_cat()/数组切片。
+    conflicts_with: []
+    supersedes: []
+
+  - id: D-05
+    category: 连接管理
+    status: confirmed
+    resolution: |
+      pyvastbase connect() 全局连接管理替代 SQLAlchemy engine + sessionmaker。
+      同步用 Collection（自动复用默认连接），异步用 AsyncCollection + AsyncConnections.connect()。
+      实例销毁由 Python GC + pyvastbase 连接池管理，无需显式 dispose。
+    rationale: |
+      pyvastbase 提供连接池和连接复用，无需 SQLAlchemy session 体系。
+    conflicts_with: []
+    supersedes: []
+
+  - id: D-06
+    category: URI 格式
+    status: confirmed
+    resolution: |
+      支持 vastbase://user:pass@host:port/db 格式 URI。
+      from_uri() 用 urllib.parse.urlparse 解析。
+      同时保留 from_params() 独立参数构造方法。
+    rationale: |
+      Vastbase 专属 scheme，语义清晰。
+      与上游 from_uri() 模式兼容（上游支持 postgresql+psycopg:// 等）。
+    conflicts_with: []
+    supersedes: []

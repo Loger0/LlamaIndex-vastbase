@@ -1,0 +1,67 @@
+{
+  "framework": "llama-index-storage-chat-store-postgres",
+  "version": "0.4.0",
+  "diagnosed_at": "2026-06-17T03:11:20Z",
+  "integration_mode": "standalone",
+  "coupling_level": "low",
+  "abstraction_type": "abstract_class",
+  "base_class": "BaseChatStore(BaseComponent)",
+  "reference_backend": "PostgresChatStore",
+  "files_to_create": [
+    "llama_index/storage/chat_store/vastbase/__init__.py",
+    "llama_index/storage/chat_store/vastbase/base.py"
+  ],
+  "files_to_modify": [],
+  "required_methods": {
+    "sync": [
+      "set_messages",
+      "get_messages",
+      "add_message",
+      "delete_messages",
+      "delete_message",
+      "delete_last_message",
+      "get_keys"
+    ],
+    "async": [
+      "aset_messages",
+      "aget_messages",
+      "async_add_message",
+      "adelete_messages",
+      "adelete_message",
+      "adelete_last_message",
+      "aget_keys"
+    ]
+  },
+  "test_strategy": {
+    "level": "full",
+    "upstream_test_count": 15,
+    "layers": [
+      "unit (pyvastbase mock)",
+      "integration (real Vastbase)",
+      "compatibility (drop-in replacement verification)"
+    ]
+  },
+  "demo": {
+    "notebook": false,
+    "script": true,
+    "description": "Simple script demonstrating VastbaseChatStore CRUD operations"
+  },
+  "open_decisions": [],
+  "dependencies": {
+    "retain": ["llama-index-core>=0.13.0,<0.15"],
+    "replace": {
+      "sqlalchemy": "pyvastbase>=0.2.7",
+      "psycopg>=3.0.0": "pyvastbase>=0.2.7",
+      "asyncpg>=0.30.0": "pyvastbase>=0.2.7"
+    }
+  },
+  "vastbase_connection": {
+    "host": "172.16.105.107",
+    "port": 15432,
+    "database": "vastbase",
+    "user": "aidev"
+  },
+  "target_package": "llama-index-storage-chat-store-vastbase",
+  "target_version": "0.1.0",
+  "target_class": "VastbaseChatStore"
+}
