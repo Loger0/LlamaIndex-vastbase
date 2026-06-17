@@ -531,7 +531,8 @@ class VastbaseChatStore(BaseChatStore):
                 alias=alias,
             )
             self._async_coll = AsyncCollection(
-                self._actual_table_name or self.table_name
+                self._actual_table_name or self.table_name,
+                using=alias,
             )
 
     async def aset_messages(
