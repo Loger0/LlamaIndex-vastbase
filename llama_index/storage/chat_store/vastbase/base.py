@@ -523,12 +523,12 @@ class VastbaseChatStore(BaseChatStore):
 
             alias = f"chatstore_{self._actual_table_name or self.table_name}"
             await AsyncConnections.connect(
+                alias,
                 host=self.host,
                 port=self.port,
                 database=self.database,
                 user=self.user,
                 password=self.password,
-                alias=alias,
             )
             self._async_coll = AsyncCollection(
                 self._actual_table_name or self.table_name,
