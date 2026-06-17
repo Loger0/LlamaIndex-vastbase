@@ -1,0 +1,22 @@
+framework: llama-index-storage-chat-store-postgres
+version: 0.4.0
+integration_mode: standalone
+decisions:
+  - id: D-01
+    category: "API 风格"
+    question: "使用同步还是异步 API？"
+    decision: "同步+原生异步双实现 — 完全对等上游 PostgresChatStore 的7+7方法，用户无需感知底层差异。pyvastbase 提供同步 Collection 和异步 AsyncCollection，可原生支持两种模式"
+    rationale: "上游 PostgresChatStore 实现了全部7个同步+7个异步方法，异步方法用原生 asyncpg 实现而非依赖基类的 asyncio.to_thread 包装。Vastbase 适配版必须保持对等以成为 drop-in replacement。pyvastbase 0.2.7+ 提供了 AsyncCollection API 可用于原生异步实现"
+    status: resolved
+  - id: D-02
+    category: "依赖策略"
+    question: "是否引入 SQLAlchemy 依赖还是用 pyvastbase 原生 API？"
+    decision: "完全替换为 pyvastbase Collection API — 移除 sqlalchemy/psycopg/asyncpg 全部依赖，用 VastbaseClient + CollectionSchema + FieldSchema 声明式管理数据模型，用 Collection CRUD 方法实现所有操作"
+    rationale: "上游依赖 sqlalchemy+psycopg+asyncpg 共3个PG生态包；Vastbase 生态要求使用 pyvastbase 统一入口。Vastbase 基于 PG 协议，其 Collection API 提供了插入/查询/更新/删除的完整封装，无需绕过 pyvastbase 直接操作底层 PG"
+    status: resolved
+  - id: D-03
+    category: "错误处理"
+    question: "沿用什么级别的错误处理策略？"
+    decision: "与上游一致 — 对关键操作（如 delete_message 越界、get_messages key 不存在）采用返回 None/空列表的静默处理策略，不引入新的异常抛出路径"
+    rationale: "上游 PostgresChatStore 在 delete_message/delete_last_message 对不存在的 key 或越界索引返回 None，在 get_messages 对不存在的 key 返回空列表。Vastbase 适配版必须保持完全相同的错误处理语义，确保作为 drop-in replacement 时用户代码无需修改"
+    status: resolved

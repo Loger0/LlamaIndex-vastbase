@@ -1,0 +1,84 @@
+{
+  "framework": "LlamaIndex ChatStore (PostgresChatStore)",
+  "version": "0.4.0",
+  "source_repo": "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres",
+  "integration_mode": "standalone",
+  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
+  "fork_target": null,
+  "coupling_level": "low",
+  "files_to_modify": [],
+  "files_to_create": [
+    "llama_index/storage/chat_store/vastbase/__init__.py",
+    "llama_index/storage/chat_store/vastbase/base.py"
+  ],
+  "abstraction_type": "abstract_class",
+  "base_class": "llama_index.core.storage.chat_store.base.BaseChatStore",
+  "reference_backend": "llama-index-storage-chat-store-postgres",
+  "required_methods": [
+    "set_messages(self, key: str, messages: List[ChatMessage]) -> None",
+    "get_messages(self, key: str) -> List[ChatMessage]",
+    "add_message(self, key: str, message: ChatMessage) -> None",
+    "delete_messages(self, key: str) -> Optional[List[ChatMessage]]",
+    "delete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
+    "delete_last_message(self, key: str) -> Optional[ChatMessage]",
+    "get_keys(self) -> List[str]",
+    "aset_messages(self, key: str, messages: List[ChatMessage]) -> None",
+    "aget_messages(self, key: str) -> List[ChatMessage]",
+    "async_add_message(self, key: str, message: ChatMessage) -> None",
+    "adelete_messages(self, key: str) -> Optional[List[ChatMessage]]",
+    "adelete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
+    "adelete_last_message(self, key: str) -> Optional[ChatMessage]",
+    "aget_keys(self) -> List[str]"
+  ],
+  "test_infrastructure": "full",
+  "test_directory": "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/tests/",
+  "test_strategy": "extract_official",
+  "demo": {
+    "type": "ChatStore API 端到端验证脚本",
+    "scenarios": [
+      "会话消息全量设置与检索 (set_messages + get_messages)",
+      "单条消息追加 (add_message + get_messages)",
+      "按索引删除消息 (delete_message)",
+      "删除最后一条消息 (delete_last_message)",
+      "删除整组消息 (delete_messages)",
+      "获取所有会话 keys (get_keys)",
+      "异步操作全量覆盖 (a* 方法)",
+      "多模态消息往返 (TextBlock + ImageBlock)"
+    ],
+    "validation_criteria": "所有7个同步方法 + 7个异步方法均通过 pyvastbase Collection API 实现，ChatMessage 序列化/反序列化往返一致，同步/异步行为对等"
+  },
+  "convention_references": [
+    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/llama_index/storage/chat_store/postgres/base.py",
+    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/llama_index/storage/chat_store/postgres/__init__.py",
+    "llama-index-core/llama_index/core/storage/chat_store/base.py"
+  ],
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API 风格",
+      "question": "使用同步还是异步 API？",
+      "options": ["仅同步（利用基类 asyncio.to_thread 包装）", "同步+原生异步双实现（完全对等上游 PostgresChatStore）"],
+      "impact": "决定适配代码的复杂度与性能",
+      "recommendation": "同步+原生异步双实现 — 完全对等上游 PostgresChatStore 的7+7方法，用户无需感知底层差异。pyvastbase 提供同步 Collection 和异步 AsyncCollection，可原生支持两种模式",
+      "status": "resolved"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "question": "是否引入 SQLAlchemy 依赖还是用 pyvastbase 原生 API？",
+      "options": ["保留 SQLAlchemy + pyvastbase PG 驱动", "完全替换为 pyvastbase Collection API"],
+      "impact": "决定适配代码的依赖栈和与上游的兼容性",
+      "recommendation": "完全替换为 pyvastbase Collection API — 移除 sqlalchemy/psycopg/asyncpg 全部依赖，用 VastbaseClient + CollectionSchema + FieldSchema 声明式管理数据模型，用 Collection CRUD 方法实现所有操作。Vastbase 基于 PG 协议，ON CONFLICT upsert 和数组操作可逐项验证兼容性",
+      "status": "resolved"
+    },
+    {
+      "id": "D-03",
+      "category": "错误处理",
+      "question": "沿用什么级别的错误处理策略？",
+      "options": ["与上游一致（隐式静默处理）", "增强错误处理（显式异常+日志）"],
+      "impact": "决定适配代码的健壮性和可调试性",
+      "recommendation": "与上游一致 — 上游 PostgresChatStore 对关键操作（如 delete_message 越界、get_messages key 不存在）采用返回 None/空列表的静默处理策略；Vastbase 适配版保持相同行为，不引入新的异常抛出路径，确保 drop-in replacement 语义",
+      "status": "resolved"
+    }
+  ]
+}
