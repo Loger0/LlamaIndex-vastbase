@@ -1,0 +1,156 @@
+framework: llamaindex-chat-store-postgres
+integration_mode: standalone
+total_child_issues: 4
+
+waves:
+  - wave: 0
+    label: "基础设施"
+    description: "包脚手架、类骨架、初始化逻辑、Collection Schema — 所有后续 Wave 依赖的基础层"
+    parallel: false
+    issues:
+      - title: "开发: 基础设施 — 包脚手架 + 初始化 + 数据模型"
+        issue_id: "TES-10"
+        multica_id: "11f2b3c6-1023-401e-98d3-9ac261a5366e"
+        status: todo
+        files:
+          - "pyproject.toml"
+          - "llama_index/storage/chat_store/vastbase/__init__.py"
+          - "llama_index/storage/chat_store/vastbase/base.py"
+          - "README.md"
+        depends_on: []
+        required_methods:
+          - "from_params"
+          - "from_uri"
+          - "_initialize"
+          - "_ensure_initialized"
+          - "_escape"
+        plan_tasks:
+          - "Task 1: 项目脚手架（pyproject.toml + __init__.py + README.md）"
+          - "Task 2: 初始化测试（conftest.py + test_init_creates_collection）"
+          - "Task 3: 初始化实现（from_params + from_uri + _initialize + Collection Schema）"
+        tests_to_pass:
+          - "tests/test_chat_store_init.py (10 tests)"
+        description: |
+          创建独立 pip 包结构，实现 VastbaseChatStore 类骨架和初始化逻辑。
+
+          **产出物:**
+          - pyproject.toml: 声明依赖 pyvastbase>=0.2.7 + llama-index-core>=0.13.0,<0.15
+          - __init__.py: 导出 VastbaseChatStore
+          - base.py: 类定义 VastbaseChatStore(BaseChatStore)、连接参数 Pydantic 字段、
+            from_params() 工厂方法、from_uri() URI 解析（vastbase:// scheme）、
+            _initialize() 懒初始化（连接 → 旧表兼容 → CollectionSchema → create/open Collection）、
+            _ensure_initialized() / _escape() 辅助方法
+          - Collection Schema: {id INT64 PK auto_id, key VARCHAR 512, value TEXT}
+
+  - wave: 1
+    label: "核心 CRUD"
+    description: "同步消息写入和读取 — set_messages + get_messages + add_message"
+    parallel: false
+    issues:
+      - title: "开发: 核心 CRUD — set_messages + get_messages + add_message"
+        issue_id: "TES-11"
+        multica_id: "9556c0ea-2484-49d3-bec8-ab099fa42b60"
+        status: backlog
+        files:
+          - "llama_index/storage/chat_store/vastbase/base.py"
+          - "tests/test_vastbase_chat_store.py"
+        depends_on: [0]
+        required_methods:
+          - "set_messages"
+          - "get_messages"
+          - "add_message"
+        plan_tasks:
+          - "Task 4: set_messages + get_messages 测试（4 个 test cases）"
+          - "Task 5: set_messages + get_messages 实现"
+          - "Task 6: add_message 测试（2 个 test cases）"
+          - "Task 7: add_message 实现"
+        tests_to_pass:
+          - "tests/test_vastbase_chat_store.py (set/get/add 测试)"
+        description: |
+          实现核心 CRUD 方法，使用 Python 层管理消息数组操作。
+
+          **数据流:**
+          - set_messages: serialize → query(key) → exists? upsert(id) : insert
+          - get_messages: query(key) → JSON parse → [ChatMessage.model_validate()]
+          - add_message: query(key) → list.append → upsert(id)（不存在则 insert）
+
+  - wave: 2
+    label: "删除操作"
+    description: "同步删除操作 — delete_messages + delete_message + delete_last_message + get_keys"
+    parallel: false
+    issues:
+      - title: "开发: 删除操作 — delete_messages + delete_message + delete_last_message + get_keys"
+        issue_id: "TES-12"
+        multica_id: "a05aaf9e-70fb-4108-912a-7a3537ac3b7a"
+        status: backlog
+        files:
+          - "llama_index/storage/chat_store/vastbase/base.py"
+          - "tests/test_vastbase_chat_store.py"
+        depends_on: [0, 1]
+        required_methods:
+          - "delete_messages"
+          - "delete_message"
+          - "delete_last_message"
+          - "get_keys"
+        plan_tasks:
+          - "Task 8: delete_messages 测试（2 个 test cases）"
+          - "Task 9: delete_messages 实现"
+          - "Task 10: delete_message 测试（3 个 test cases）"
+          - "Task 11: delete_message 实现"
+          - "Task 12: delete_last_message 测试（4 个 test cases）"
+          - "Task 13: delete_last_message 实现"
+          - "Task 14: get_keys 测试（2 个 test cases）"
+          - "Task 15: get_keys 实现"
+        tests_to_pass:
+          - "tests/test_vastbase_chat_store.py (删除 + get_keys 测试)"
+        description: |
+          实现同步删除和查询方法。删除操作先 SELECT 再 Python list 操作再 upsert/delete。
+
+          **数据流:**
+          - delete_messages: query(key) → deserialize → delete(key) → return messages
+          - delete_message: query(key) → list.pop(idx) → upsert(id) → return ChatMessage
+          - delete_last_message: query(key) → list.pop() → upsert(id) → return ChatMessage
+          - get_keys: query(expr="1=1", output_fields=["key"]) → [r["key"] for r]
+
+  - wave: 3
+    label: "异步 + 集成 + 文档"
+    description: "7 个原生异步方法 + 兼容性测试 + 最终验收 + 文档"
+    parallel: false
+    issues:
+      - title: "开发: 异步方法 + 集成测试 + 兼容性 + 文档"
+        issue_id: "TES-13"
+        multica_id: "c7da4b72-8809-441c-bc67-82722b05f684"
+        status: backlog
+        files:
+          - "llama_index/storage/chat_store/vastbase/base.py"
+          - "tests/test_async_chat_store.py"
+          - "tests/test_compat.py"
+          - "README.md"
+        depends_on: [0, 1, 2]
+        required_methods:
+          - "aset_messages"
+          - "aget_messages"
+          - "async_add_message"
+          - "adelete_messages"
+          - "adelete_message"
+          - "adelete_last_message"
+          - "aget_keys"
+        plan_tasks:
+          - "Task 16: 异步方法测试（7 个 async test cases）"
+          - "Task 17: 7 个异步方法实现（pyvastbase AsyncCollection 原生异步）"
+          - "Task 18: from_uri + 完整 CRUD 工作流测试"
+          - "Task 19: 兼容性测试（drop-in replacement 验证）"
+          - "Task 20: 最终测试套件执行 + README 文档"
+        tests_to_pass:
+          - "tests/test_async_chat_store.py (7 async tests)"
+          - "tests/test_compat.py (5 compat tests)"
+          - "tests/test_chat_store_integration.py (7 E2E tests)"
+        description: |
+          实现全部 7 个异步方法（pyvastbase AsyncCollection + AsyncConnections 原生异步），
+          完成兼容性验证和最终文档。
+
+          **异步连接管理:**
+          - _ensure_async_initialized(): AsyncConnections.connect() → AsyncCollection()
+          - 每个 async 方法 = await self._async_coll.*（query/insert/upsert/delete）
+          - 不使用 asyncio.to_thread()（与 Decision D-01 对齐）
+          - 最终全量测试 PASS + README 含使用示例

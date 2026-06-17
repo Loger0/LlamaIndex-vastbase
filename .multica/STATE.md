@@ -16,6 +16,7 @@
 | code-reviewer | ✅ 完成 | Plan-Check Round 4 passed |
 | convention-extractor | ⏭️ 跳过 | Standalone mode, no conventions needed |
 | **test-scout** | **✅ 完成** | 56 tests written, RED phase confirmed |
+| **eco-issue-splitter** | **✅ 完成** | 4 sub-issues created (TES-10~13), split-plan.yaml written |
 | adapter-dev | ⏳ 待执行 | Implement VastbaseChatStore (14 methods) |
 | task-dispatcher | ⏳ 待分配 | Next routing |
 
@@ -27,6 +28,7 @@
 | 方案设计 | ✅ | Spec, Plan (Plan-Check R4 passed) |
 | 人审门禁 | ✅ | Approved by luoyj |
 | **测试规划** | **✅** | **tests/ (56 tests, RED phase), TEST_PLAN.md, NYQUIST_MAP.md** |
+| **任务拆分** | **✅** | **4 sub-issues (TES-10~13), split-plan.yaml, 4 serial waves** |
 | 代码实现 | ⏳ | Pending adapter-dev |
 | 验证 | ⏳ | Pending |
 
