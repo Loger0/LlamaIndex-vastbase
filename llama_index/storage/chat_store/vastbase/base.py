@@ -292,7 +292,7 @@ class VastbaseChatStore(BaseChatStore):
         self._ensure_initialized()
 
         # Serialize all messages to JSON
-        value = json.dumps([m.model_dump() for m in messages])
+        value = json.dumps([m.model_dump(mode="json") for m in messages])
 
         # Check if key already exists
         existing = self._coll.query(
@@ -360,13 +360,13 @@ class VastbaseChatStore(BaseChatStore):
                 {
                     "id": self._next_id(),
                     "key": key,
-                    "value": json.dumps([message.model_dump()]),
+                    "value": json.dumps([message.model_dump(mode="json")]),
                 }
             ])
         else:
             # Key exists — append to array in Python, then upsert
             messages = json.loads(existing[0]["value"])
-            messages.append(message.model_dump())
+            messages.append(message.model_dump(mode="json"))
             self._coll.upsert([
                 {
                     "id": existing[0]["id"],
@@ -541,7 +541,7 @@ class VastbaseChatStore(BaseChatStore):
         """Async version of set_messages."""
         await self._ensure_async_initialized()
 
-        value = json.dumps([m.model_dump() for m in messages])
+        value = json.dumps([m.model_dump(mode="json") for m in messages])
 
         existing = await self._async_coll.query(
             expr=f"key = '{self._escape(key)}'", limit=1
@@ -593,12 +593,12 @@ class VastbaseChatStore(BaseChatStore):
                 {
                     "id": self._next_id(),
                     "key": key,
-                    "value": json.dumps([message.model_dump()]),
+                    "value": json.dumps([message.model_dump(mode="json")]),
                 }
             ])
         else:
             messages = json.loads(existing[0]["value"])
-            messages.append(message.model_dump())
+            messages.append(message.model_dump(mode="json"))
             await self._async_coll.upsert([
                 {
                     "id": existing[0]["id"],
