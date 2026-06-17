@@ -1,0 +1,95 @@
+{
+  "framework": "llama-index-storage-chat-store-postgres",
+  "version": "0.4.0",
+  "integration_mode": "standalone",
+  "coupling_level": "low",
+  "abstraction_type": "abstract_class",
+  "base_class": "BaseChatStore",
+  "base_class_module": "llama_index.core.storage.chat_store.base",
+  "reference_backend": "PostgresChatStore",
+  "reference_url": "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres",
+  "package_name": "llama-index-storage-chat-store-vastbase",
+  "package_version": "0.1.0",
+  "class_name": "VastbaseChatStore",
+  "files_to_modify": [],
+  "files_to_create": [
+    "llama_index/storage/chat_store/vastbase/__init__.py",
+    "llama_index/storage/chat_store/vastbase/base.py"
+  ],
+  "required_methods": {
+    "sync": [
+      "set_messages",
+      "get_messages",
+      "add_message",
+      "delete_messages",
+      "delete_message",
+      "delete_last_message",
+      "get_keys"
+    ],
+    "async": [
+      "aset_messages",
+      "aget_messages",
+      "async_add_message",
+      "adelete_messages",
+      "adelete_message",
+      "adelete_last_message",
+      "aget_keys"
+    ]
+  },
+  "async_strategy": "native",
+  "async_implementation": "pyvastbase AsyncCollection + AsyncConnections",
+  "dependencies": {
+    "required": [
+      "llama-index-core>=0.13.0,<0.15",
+      "pyvastbase>=0.2.7"
+    ],
+    "removed": [
+      "sqlalchemy",
+      "psycopg>=3.0.0",
+      "asyncpg>=0.30.0"
+    ]
+  },
+  "test_strategy": {
+    "level": "full",
+    "upstream_test_count": 15,
+    "phases": [
+      "Gate 1: pyvastbase integration tests (per sub-issue Phase 2b)",
+      "Gate 2: Framework official tests (per sub-issue Phase 3)",
+      "Gate 3: Framework integration acceptance tests (parent Issue Flow C)"
+    ],
+    "test_files": [
+      "tests/test_vastbase_chatstore.py",
+      "tests/test_vastbase_chatstore_async.py",
+      "tests/conftest.py"
+    ]
+  },
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API Style",
+      "resolution": "同步 + 原生异步双实现（7+7=14 方法，全部显式覆写，完全对等上游 PostgresChatStore）。异步使用 pyvastbase AsyncCollection + AsyncConnections 实现原生 async I/O，不依赖基类 asyncio.to_thread() 默认实现。",
+      "rationale": "上游 PostgresChatStore 14 个方法全部原生实现（同步用 psycopg，异步用 asyncpg）。pyvastbase 提供 AsyncCollection + AsyncConnections 原生异步 API，具备实现条件。必须对等上游以保证 drop-in replacement 语义。"
+    },
+    {
+      "id": "D-02",
+      "category": "Dependency Strategy",
+      "resolution": "完全替换为 pyvastbase Collection API，移除 sqlalchemy/psycopg/asyncpg",
+      "rationale": "Vastbase 适配的核心目标是用 pyvastbase 替代 PG 驱动栈"
+    },
+    {
+      "id": "D-03",
+      "category": "Error Handling",
+      "resolution": "与上游一致：静默 None/空列表，保持 drop-in replacement 语义",
+      "rationale": "确保现有 LlamaIndex 用户代码无需修改即可切换后端"
+    }
+  ],
+  "vastbase_connection": {
+    "host": "172.16.105.107",
+    "port": 15432,
+    "database": "vastbase",
+    "user": "aidev",
+    "password": "Vbase_123456"
+  },
+  "created_at": "2026-06-17T03:11:00Z",
+  "updated_at": "2026-06-17T00:00:00Z"
+}
