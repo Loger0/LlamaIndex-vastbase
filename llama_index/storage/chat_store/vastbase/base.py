@@ -528,7 +528,7 @@ class VastbaseChatStore(BaseChatStore):
                 database=self.database,
                 user=self.user,
                 password=self.password,
-                using=alias,
+                alias=alias,
             )
             self._async_coll = AsyncCollection(
                 self._actual_table_name or self.table_name
