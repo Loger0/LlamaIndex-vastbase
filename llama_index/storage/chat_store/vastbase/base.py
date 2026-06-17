@@ -260,19 +260,14 @@ class VastbaseChatStore(BaseChatStore):
     def _next_id(self) -> int:
         """Generate the next unique ID for a new row.
 
-        Queries the collection for the maximum ``id`` and returns max+1.
-        Returns 1 if the collection is empty.
+        Uses a timestamp-based counter: ``int(time.time() * 1_000_000) + counter``.
+        This is a pure Python operation with no database calls, making it safe
+        to call from both synchronous and asynchronous contexts.
+
+        The microsecond timestamp prefix provides reasonable uniqueness across
+        store instances, and the counter ensures monotonicity within a single
+        instance.
         """
-        # Use a timestamp-based counter as fallback; query the max id
-        results = self._coll.query(
-            expr="1=1", output_fields=["id"], limit=1
-        )
-        if results:
-            # We can't easily get MAX via query(), so use a simple counter
-            # that starts from current timestamp to avoid collisions across
-            # store instances
-            pass
-        # Simple counter approach — sufficient for single-instance chat stores
         self._id_counter += 1
         return int(time.time() * 1_000_000) + self._id_counter
 

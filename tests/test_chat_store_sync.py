@@ -215,8 +215,9 @@ def test_delete_messages_nonexistent_key(chat_store: VastbaseChatStore):
     Upstream behavior: DELETE with no matching row returns silently.
     VastbaseChatStore should handle this gracefully (no-op or logged).
     """
-    # Should not raise
-    chat_store.delete_messages("nonexistent_key_delete")
+    # Should not raise and should return None for non-existent key
+    result = chat_store.delete_messages("nonexistent_key_delete")
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
