@@ -1,0 +1,128 @@
+{
+  "framework": "LlamaIndex",
+  "version": "v0.14.22",
+  "source_repo": "https://github.com/run-llama/llama_index",
+  "integration_mode": "standalone",
+  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
+  "fork_target": null,
+  "coupling_level": "low",
+  "files_to_modify": [],
+  "files_to_create": [
+    "llama-index-vector-stores-vastbase/pyproject.toml",
+    "llama-index-vector-stores-vastbase/README.md",
+    "llama-index-vector-stores-vastbase/llama_index/vector_stores/vastbase/__init__.py",
+    "llama-index-vector-stores-vastbase/llama_index/vector_stores/vastbase/base.py"
+  ],
+  "abstraction_type": "abstract_class",
+  "base_class": "llama_index.core.vector_stores.types.BasePydanticVectorStore",
+  "reference_backend": "PGVectorStore (llama-index-vector-stores-postgres v0.8.1)",
+  "required_methods": [
+    "client (property) -> Any",
+    "add(nodes: Sequence[BaseNode], **kwargs: Any) -> List[str]",
+    "delete(ref_doc_id: str, **delete_kwargs: Any) -> None",
+    "query(query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult"
+  ],
+  "optional_methods": [
+    "async_add(nodes: Sequence[BaseNode], **kwargs: Any) -> List[str]",
+    "adelete(ref_doc_id: str, **delete_kwargs: Any) -> None",
+    "aquery(query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult",
+    "delete_nodes(node_ids: Optional[List[str]], filters: Optional[MetadataFilters], **delete_kwargs) -> None",
+    "adelete_nodes(node_ids: Optional[List[str]], filters: Optional[MetadataFilters], **delete_kwargs) -> None",
+    "get_nodes(node_ids: Optional[List[str]], filters: Optional[MetadataFilters]) -> List[BaseNode]",
+    "aget_nodes(node_ids: Optional[List[str]], filters: Optional[MetadataFilters]) -> List[BaseNode]",
+    "clear() -> None",
+    "aclear() -> None",
+    "persist(persist_path: str, fs: Optional[AbstractFileSystem]) -> None"
+  ],
+  "required_methods_count": 4,
+  "test_infrastructure": "full",
+  "test_directory": "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/tests/",
+  "test_strategy": "extract_official",
+  "test_patterns": [
+    "pytest + pytest-asyncio (asyncio_mode=auto)",
+    "Session-scoped fixtures for DB lifecycle (create/drop test databases)",
+    "Parametrized async/sync testing via use_async flag",
+    "Parametrized regular/halfvec vector type testing",
+    "Comprehensive metadata filter testing (all 14 FilterOperator variants)",
+    "HNSW index creation and query testing",
+    "MMR rerank testing with prefetch factor control",
+    "Hybrid search testing (dense + sparse combined)"
+  ],
+  "test_file_size_lines": 3222,
+  "demo": {
+    "type": "RAG 文档入库 + 多模式检索验证脚本",
+    "scenarios": [
+      "文档 embedding 入库 (add + async_add)",
+      "DEFAULT 向量相似度检索 (cosine/l2/ip)",
+      "SPARSE / TEXT_SEARCH 全文检索",
+      "HYBRID 混合检索 (dense + sparse → 去重)",
+      "MMR 最大边际相关重排检索",
+      "元数据过滤检索 (EQ/GT/LT/NE/GTE/LTE/IN/NIN/CONTAINS/TEXT_MATCH/ANY/ALL/IS_EMPTY)",
+      "按 ref_doc_id 删除文档 (delete/adelete)",
+      "按 node_ids + filters 批量删除 (delete_nodes/adelete_nodes)",
+      "按 node_ids/filters 获取节点 (get_nodes/aget_nodes)",
+      "清空 Collection (clear/aclear)",
+      "HNSW 索引创建与参数化查询"
+    ],
+    "validation_criteria": "端到端 API 验证：add → query (DEFAULT/SPARSE/HYBRID/MMR) → get_nodes → delete_nodes → clear。所有操作返回预期结果，无异常，查询模式返回正确的相似度排序。"
+  },
+  "convention_references": [
+    "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/llama_index/vector_stores/postgres/base.py",
+    "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/llama_index/vector_stores/postgres/__init__.py",
+    "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/pyproject.toml",
+    "llama-index-core/llama_index/core/vector_stores/types.py",
+    "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/tests/test_postgres.py"
+  ],
+  "reference_implementation_summary": {
+    "total_lines": 1698,
+    "class_name": "PGVectorStore",
+    "dependencies": {
+      "required": [
+        "psycopg2-binary>=2.9.9",
+        "asyncpg>=0.29.0",
+        "pgvector>=0.3.6",
+        "sqlalchemy[asyncio]>=1.4.49",
+        "llama-index-core>=0.13.0,<0.15"
+      ]
+    },
+    "key_patterns": {
+      "connection": "SQLAlchemy create_engine (sync) + create_async_engine (async) + sessionmaker",
+      "schema_management": "Dynamic declarative_base + get_data_model() creates table class at runtime",
+      "index_management": "DDL-based CREATE INDEX for HNSW (hnsw), BTREE (metadata scalars), GIN (text[] arrays + tsvector)",
+      "filtering": "text()-based SQL fragments with ->/->>/::jsonb/::float type casting",
+      "full_text_search": "to_tsvector('english', text) computed column + to_tsquery + ts_rank",
+      "hybrid_search": "Separate dense (cosine_distance) and sparse (ts_rank) queries → union → dedup",
+      "mmr": "Prefetch N×top_k candidates → extract embeddings → get_top_k_mmr_embeddings → rerank → fallback to DEFAULT on failure",
+      "vector_distance": "cosine_distance → similarity = 1 - distance"
+    }
+  },
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API风格",
+      "question": "使用同步还是异步 API？",
+      "options": ["仅同步", "仅异步", "同步+异步（对等实现）"],
+      "impact": "决定适配代码量和测试覆盖范围。上游 PGVectorStore 同时提供 sync/async 两种实现",
+      "recommendation": "同步+异步（对等实现）— 与上游 PGVectorStore 保持一致，pyvastbase 同时支持 VastbaseClient（同步）和 AsyncCollection（异步）",
+      "status": "resolved"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "question": "是否引入与上游相同的依赖栈还是用 Vastbase 原生替代？",
+      "options": ["保留上游依赖 (sqlalchemy+psycopg2+asyncpg+pgvector)", "全部替换为 pyvastbase", "混合策略 (pyvastbase + sqlalchemy 仅用于元数据操作)"],
+      "impact": "决定依赖清单和实现架构。上游 PGVectorStore 严重依赖 SQLAlchemy ORM + pgvector 扩展",
+      "recommendation": "全部替换为 pyvastbase — pyvastbase 0.2.0+ 提供 CollectionSchema/FieldSchema/IndexParams 完整替代 SQLAlchemy declarative_base + pgvector Vector 类型 + DDL 索引管理，无需保留任何 PG 生态组件",
+      "status": "resolved"
+    },
+    {
+      "id": "D-03",
+      "category": "错误处理",
+      "question": "沿用什么级别的错误处理策略？",
+      "options": ["宽松容错（logger.warning + 静默降级）", "严格报错（异常立即抛出）", "混合策略（可配置 fail_on_error 标志）"],
+      "impact": "决定初始化失败、查询异常等场景的容错行为。上游 PGVectorStore 使用 initialization_fail_on_error 参数控制行为",
+      "recommendation": "混合策略 — 保持与上游一致的 initialization_fail_on_error 参数，默认 False（宽松），支持用户按需切换严格模式",
+      "status": "resolved"
+    }
+  ]
+}
