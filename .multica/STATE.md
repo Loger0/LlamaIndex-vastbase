@@ -46,9 +46,20 @@
 
 ### Phase 3: convention-extractor — 规范提取 ✅ 完成 — 2026-06-17
 
-### Phase 4: implement — 待开始
+### Phase 4: eco-issue-splitter — 任务拆分 ✅ 完成 — 2026-06-17
 
-- Implement: pending
+- 子 Issue 拆分完成：4 个子 Issue (Wave 0–3)
+- split-plan.yaml 产出：`.multica/split-plans/llamaindex-split-plan.yaml`
+- 子 Issue 列表：
+  - [TES-3] Wave 0: 基础设施 — 包脚手架 + 类骨架 + 初始化 + 数据模型
+  - [TES-5] Wave 1: CRUD 实现 — add/delete/get_nodes/clear + 过滤器翻译
+  - [TES-8] Wave 2: 查询引擎 — DEFAULT/SPARSE/HYBRID/MMR 全模式查询
+  - [TES-9] Wave 3: 集成测试 + README + 收尾
+- 全部 4 个子 Issue 已关联父 Issue TES-1，状态 todo，等待 task-dispatcher 调度
+
+### Phase 5: implement — 进行中
+
+- Implement: pending（子 Issue 等待 executor）
 - Framework Test: pending
 
 ### 关键决策 (TES-1)
@@ -98,6 +109,7 @@
 - `.multica/specs/llamaindex-spec.md` — Design Spec (14 节, 419 行)
 - `.multica/plans/llamaindex-plan.md` — Implementation Plan (16 TDD 任务)
 - `.multica/conventions/llamaindex-conventions.yaml` — Convention Spec (243 行)
+- `.multica/split-plans/llamaindex-split-plan.yaml` — Wave 并行拆分计划 (4 Waves)
 - `tests/TEST_PLAN.md` — 测试交付报告
 - `tests/NYQUIST_MAP.md` — Nyquist 验证映射表
 
@@ -105,4 +117,4 @@
 - `.multica/profiles/llamaindex-chat-store-postgres-profile.json` — Framework Profile
 - `.multica/decisions/llamaindex-chat-store-postgres-decisions.yaml` — 开放决策
 
-- **最后更新**: 2026-06-17 (test-scout 完成 TES-1)
+- **最后更新**: 2026-06-17 (eco-issue-splitter 完成 TES-1 任务拆分)

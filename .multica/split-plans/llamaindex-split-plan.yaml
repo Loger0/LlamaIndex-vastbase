@@ -1,0 +1,143 @@
+framework: llamaindex
+integration_mode: standalone
+total_child_issues: 4
+
+waves:
+  - wave: 0
+    label: "基础设施"
+    description: "包脚手架、类骨架、初始化逻辑、数据模型 — 所有后续 Wave 依赖的基础层"
+    parallel: false
+    issues:
+      - title: "开发: 基础设施 — 包脚手架 + 类骨架 + 初始化 + 数据模型"
+        files:
+          - "pyproject.toml"
+          - "llama_index/vector_stores/vastbase/__init__.py"
+          - "llama_index/vector_stores/vastbase/base.py"
+        depends_on: []
+        required_methods:
+          - "client (property)"
+        plan_tasks:
+          - "Task 1: 包脚手架 (pyproject.toml + __init__.py)"
+          - "Task 2: 类骨架 (__init__ + from_params + client property)"
+          - "Task 3: DBEmbeddingRow + _node_to_row_dict + _db_rows_to_query_result"
+          - "Task 4: _initialize + _create_collection_if_not_exists + close"
+          - "Task 14: _create_hnsw_index 完整实现"
+        tests_to_pass:
+          - "tests/test_collection_init.py (9 tests)"
+        description: |
+          创建独立的 pip 包结构，实现 VastbaseVectorStore 类骨架和初始化逻辑。
+
+          **产出物:**
+          - pyproject.toml: 声明依赖 pyvastbase>=0.2.7 + llama-index-core>=0.13.0,<0.15
+          - __init__.py: 导出 VastbaseVectorStore
+          - base.py: 类定义、连接参数、from_params() 工厂方法、_initialize() 懒初始化、
+            _create_collection_if_not_exists() Collection 创建、close() 连接关闭、
+            _create_hnsw_index() HNSW 索引创建、DBEmbeddingRow 数据结构、
+            _node_to_row_dict() / _db_rows_to_query_result() 数据转换
+
+  - wave: 1
+    label: "CRUD 实现"
+    description: "数据写入 + 14 种 FilterOperator 过滤器翻译 + 数据删除/清空/节点查询 — 文件与 Wave 0 有重叠，串行执行"
+    parallel: false
+    issues:
+      - title: "开发: CRUD 实现 — add/delete/get_nodes/clear + 过滤器翻译"
+        files:
+          - "llama_index/vector_stores/vastbase/base.py"
+        depends_on: [0]
+        required_methods:
+          - "add(nodes) -> List[str]"
+          - "async_add(nodes) -> List[str]"
+          - "delete(ref_doc_id) -> None"
+          - "adelete(ref_doc_id) -> None"
+          - "delete_nodes(node_ids, filters) -> None"
+          - "adelete_nodes(node_ids, filters) -> None"
+          - "clear() -> None"
+          - "aclear() -> None"
+          - "get_nodes(node_ids, filters) -> List[BaseNode]"
+          - "aget_nodes(node_ids, filters) -> List[BaseNode]"
+        plan_tasks:
+          - "Task 5: add + async_add 方法实现"
+          - "Task 6: Filter 翻译 — OPERATOR_MAP + _build_filter_clause + _recursively_apply_filters"
+          - "Task 8: delete + adelete + delete_nodes + adelete_nodes 方法实现"
+          - "Task 9: get_nodes + aget_nodes + clear + aclear 方法实现"
+        tests_to_pass:
+          - "tests/test_crud.py (11 tests)"
+          - "tests/test_filter.py (18 tests)"
+        description: |
+          实现 VastbaseVectorStore 的全部 CRUD 操作和 metadata 过滤器系统。
+
+          **过滤器翻译 (Task 6):**
+          将上游 PGVectorStore 的 14 种 FilterOperator 映射到 PG 兼容的 SQL expr 字符串：
+          EQ/GT/LT/NE/GTE/LTE/IN/NIN/CONTAINS/TEXT_MATCH/TEXT_MATCH_INSENSITIVE/IS_EMPTY/ANY/ALL，
+          支持 AND/OR 逻辑组合和嵌套 MetadataFilters。
+
+          **CRUD 操作:**
+          - add/async_add: nodes → row dicts → client.insert()
+          - delete/adelete: 按 ref_doc_id 删除 (expr="metadata_->>'ref_doc_id' = '...' ")
+          - delete_nodes/adelete_nodes: 按 node_ids 或 filters 批量删除
+          - get_nodes/aget_nodes: 按 node_ids 或 filters 查询节点（含 embedding）
+          - clear/aclear: client.truncate_collection() 清空集合
+
+  - wave: 2
+    label: "查询引擎"
+    description: "DEFAULT/SPARSE/HYBRID/MMR 四种查询模式 + query/aquery 调度器 — 依赖 Wave 0+1 的全部实现"
+    parallel: false
+    issues:
+      - title: "开发: 查询引擎 — DEFAULT/SPARSE/HYBRID/MMR 全模式查询"
+        files:
+          - "llama_index/vector_stores/vastbase/base.py"
+        depends_on: [0, 1]
+        required_methods:
+          - "query(query: VectorStoreQuery) -> VectorStoreQueryResult"
+          - "aquery(query: VectorStoreQuery) -> VectorStoreQueryResult"
+        plan_tasks:
+          - "Task 7: _query_with_score + _aquery_with_score (DEFAULT 余弦相似度检索)"
+          - "Task 10: _sparse_query_with_rank (SPARSE/TEXT_SEARCH to_tsvector/to_tsquery 全文检索)"
+          - "Task 11: _hybrid_query + _dedup_results (HYBRID dense+sparse 并发去重)"
+          - "Task 12: _mmr_query + _query_with_embedding (MMR 最大边际相关性重排序)"
+          - "Task 13: query + aquery 调度器 (四模式分发)"
+        tests_to_pass:
+          - "tests/test_search.py (12 tests)"
+          - "tests/test_async.py (12 tests)"
+        description: |
+          实现 VastbaseVectorStore 的完整查询引擎，支持四种查询模式。
+
+          **DEFAULT 模式:** client.search() + cosine 相似度检索，支持 metadata 过滤、
+          hnsw_ef_search 参数、customize_search_fn 回调钩子。
+
+          **SPARSE/TEXT_SEARCH 模式:** PG 兼容路径 — to_tsvector/to_tsquery/@@ 全文检索，
+          查询字符串经正则清洗后拼入 expr 字符串。
+
+          **HYBRID 模式:** 并发执行 dense (余弦) + sparse (全文) 查询，结果去重合并，
+          异步版使用 asyncio.gather()。
+
+          **MMR 模式:** 预取含 embedding 的结果 → Python 侧 get_top_k_mmr_embeddings() 重排序，
+          支持 mmr_prefetch_factor/mmr_prefetch_k/mmr_threshold 参数，失败回退 DEFAULT。
+
+          **调度器 (query/aquery):** 按 VectorStoreQueryMode 分发到对应查询方法。
+
+  - wave: 3
+    label: "集成测试 + 收尾"
+    description: "E2E 集成测试完善、conftest 验证、README 文档、状态更新 — 依赖所有实现完成"
+    parallel: false
+    issues:
+      - title: "开发: 集成测试 + README + 收尾"
+        files:
+          - "tests/conftest.py"
+          - "tests/test_vastbase_integration.py"
+          - "README.md"
+          - ".multica/STATE.md"
+        depends_on: [0, 1, 2]
+        required_methods: []
+        plan_tasks:
+          - "Task 15: 集成测试 (conftest.py + test_vastbase_integration.py)"
+          - "Task 16: STATE.md 更新 + 标签切换 + 通知"
+        tests_to_pass:
+          - "tests/test_integration.py (7 tests)"
+        description: |
+          编写端到端集成测试、完善 README 文档、更新项目状态。
+
+          **集成测试:** 真实 Vastbase 连接的全生命周期测试（add → get_nodes → delete → clear）、
+          DEFAULT 向量检索验收、多实例隔离测试、customize_search_fn 集成测试。
+
+          **收尾:** 更新 .multica/STATE.md 标记 Phase 完成、提交所有变更、推送分支。
