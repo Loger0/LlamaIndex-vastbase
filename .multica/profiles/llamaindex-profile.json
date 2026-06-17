@@ -1,0 +1,60 @@
+{
+  "framework": "llamaindex",
+  "version": "0.14.22",
+  "integration_mode": "standalone",
+  "coupling_level": "low",
+  "abstraction_type": "abstract_class",
+  "base_class": "BasePydanticVectorStore",
+  "base_class_module": "llama_index.core.vector_stores.types",
+  "required_methods": ["client", "add", "delete", "query"],
+  "optional_methods": [
+    "async_add", "adelete", "aquery",
+    "delete_nodes", "adelete_nodes",
+    "get_nodes", "aget_nodes",
+    "clear", "aclear", "persist"
+  ],
+  "reference_backend": "PGVectorStore",
+  "reference_source": "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/vector_stores/llama-index-vector-stores-postgres",
+  "reference_size_lines": 1698,
+  "reference_stack": "SQLAlchemy + psycopg2 + asyncpg + pgvector",
+  "files_to_create": [
+    "llama_index/vector_stores/vastbase/__init__.py",
+    "llama_index/vector_stores/vastbase/base.py",
+    "pyproject.toml",
+    "README.md"
+  ],
+  "files_to_modify": [],
+  "test_strategy": "three_layer",
+  "test_infrastructure": "full",
+  "test_size_lines": 3222,
+  "demo": {
+    "type": "notebook_or_script",
+    "description": "Demo notebook showing VastbaseVectorStore usage with LlamaIndex"
+  },
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API风格",
+      "decision": "同步+异步（对等实现）",
+      "rationale": "上游 PGVectorStore 同步/异步方法对等实现"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "decision": "全部替换为 pyvastbase",
+      "rationale": "移除所有 SQLAlchemy/psycopg2/asyncpg/pgvector 依赖"
+    },
+    {
+      "id": "D-03",
+      "category": "错误处理",
+      "decision": "混合策略（可配置 fail_on_error）",
+      "rationale": "上游通过 add_kwargs 控制插入失败时的行为"
+    }
+  ],
+  "key_findings": [
+    "集成模式为 standalone：适配器作为独立 pip 包发布，无需 fork 或修改 LlamaIndex 核心源码",
+    "耦合度低：仅需创建 4 个文件，无需修改框架已有文件",
+    "参考实现成熟：PGVectorStore 提供完整的 5 种查询模式 + 14 种元数据过滤操作符",
+    "测试可复用：上游 3222 行 pytest 测试可作为 Vastbase 适配器测试的模板"
+  ]
+}
