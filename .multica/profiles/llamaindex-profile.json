@@ -1,0 +1,105 @@
+{
+  "framework": "llamaindex",
+  "version": "0.14.22",
+  "package_version": "llama-index-vector-stores-postgres v0.8.1",
+  "source_repo": "https://github.com/run-llama/llama_index",
+  "integration_mode": "standalone",
+  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
+  "fork_target": null,
+  "coupling_level": "low",
+  "files_to_modify": [],
+  "files_to_create": [
+    "llama-index-vector-stores-vastbase/pyproject.toml",
+    "llama-index-vector-stores-vastbase/README.md",
+    "llama_index/vector_stores/vastbase/__init__.py",
+    "llama_index/vector_stores/vastbase/base.py"
+  ],
+  "abstraction_type": "abstract_class",
+  "base_class": "BasePydanticVectorStore",
+  "reference_backend": "PGVectorStore (llama-index-vector-stores-postgres v0.8.1)",
+  "required_methods": [
+    "client (property)",
+    "add(nodes: Sequence[BaseNode], **add_kwargs) -> List[str]",
+    "async_add(nodes: Sequence[BaseNode], **kwargs) -> List[str]",
+    "delete(ref_doc_id: str, **delete_kwargs) -> None",
+    "adelete(ref_doc_id: str, **delete_kwargs) -> None",
+    "delete_nodes(node_ids, filters, **delete_kwargs) -> None",
+    "adelete_nodes(node_ids, filters, **delete_kwargs) -> None",
+    "clear() -> None",
+    "aclear() -> None",
+    "get_nodes(node_ids, filters) -> List[BaseNode]",
+    "aget_nodes(node_ids, filters) -> List[BaseNode]",
+    "query(query: VectorStoreQuery, **kwargs) -> VectorStoreQueryResult",
+    "aquery(query: VectorStoreQuery, **kwargs) -> VectorStoreQueryResult"
+  ],
+  "test_infrastructure": "partial",
+  "test_directory": "llama-index-integrations/vector_stores/llama-index-vector-stores-postgres/tests/",
+  "test_strategy": "extend_partial",
+  "demo": {
+    "type": "RAG 文档入库 + 向量检索端到端验证脚本",
+    "scenarios": [
+      "VastbaseVectorStore 实例创建与连接",
+      "批量节点写入 (add / async_add)",
+      "向量检索 — DEFAULT 模式 (cosine_distance 相似度搜索)",
+      "metadata 过滤检索 (14 种 FilterOperator)",
+      "AND/OR 逻辑组合过滤",
+      "批量删除 (delete_nodes by node_ids + filters)",
+      "清空表 (clear / aclear)",
+      "节点读取 (get_nodes by node_ids + filters)",
+      "连接关闭 (close)"
+    ],
+    "validation_criteria": "所有场景 API 调用无异常，返回结果与预期一致（增查删改全生命周期覆盖），验证脚本可重复执行"
+  },
+  "convention_references": [
+    "llama-index-vector-stores-postgres/llama_index/vector_stores/postgres/base.py",
+    "llama-index-core/llama_index/core/vector_stores/types.py",
+    "llama-index-vector-stores-postgres/tests/test_postgres.py"
+  ],
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API 风格",
+      "question": "使用同步还是异步 API？",
+      "options": ["仅同步", "仅异步", "同步 + 异步双实现"],
+      "impact": "决定适配代码量、API 覆盖范围、与上游框架的兼容程度",
+      "recommendation": "同步 + 异步双实现 — 上游 PGVectorStore 已实现全部 sync/async 方法对，且 LlamaIndex 框架同时使用两种模式；pyvastbase 提供 VastbaseClient（同步）和 AsyncCollection（异步）双通道",
+      "status": "resolved"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "question": "是否引入与 reference_backend 相同的依赖链，还是全部用 Vastbase 原生 API 替代？",
+      "options": ["保留 psycopg2+asyncpg+sqlalchemy+pgvector", "全部替换为 pyvastbase"],
+      "impact": "决定适配器的运行时依赖栈和安装复杂度",
+      "recommendation": "全部替换为 pyvastbase — 需求明确要求用 pyvastbase 的 Collection API 替代 SQLAlchemy + pgvector 驱动栈；上游依赖链（psycopg2、asyncpg、sqlalchemy、pgvector）全部移除，仅依赖 pyvastbase>=0.2.7 + llama-index-core>=0.13.0,<0.15",
+      "status": "resolved"
+    },
+    {
+      "id": "D-03",
+      "category": "错误处理",
+      "question": "沿用什么级别的错误处理策略？",
+      "options": ["上游 PGVectorStore 的 _logger.warning + 可选 fail_on_error", "严格抛出异常", "静默降级"],
+      "impact": "决定适配器在异常场景下的行为（连接失败、Schema 创建失败等）",
+      "recommendation": "沿用上游 PGVectorStore 模式 — 使用 _logger.warning 记录非致命错误 + initialization_fail_on_error 参数控制是否抛出；保持 perform_setup 参数支持优雅降级",
+      "status": "resolved"
+    },
+    {
+      "id": "D-04",
+      "category": "功能裁剪",
+      "question": "上游 PGVectorStore 的 HALFVEC 半精度向量、HNSW/IVFFlat 索引、全文搜索（to_tsvector/to_tsquery）、JSONB 操作符等高级 PG 特性是否全部移植？",
+      "options": ["全量移植所有功能", "分阶段：基础 CRUD + 向量检索 → 混合搜索 → MMR → 高级过滤"],
+      "impact": "决定 MVP 范围和开发优先级",
+      "recommendation": "全量移植所有功能 — 需求明确要求功能对等；但实现上优先基础 CRUD + DEFAULT 向量检索（Phase 1），再逐步叠加 metadata 过滤（Phase 2）、混合搜索 + MMR（Phase 3）、半精度 + 高级索引（Phase 4）。其中全文搜索和 JSONB 操作符需逐一验证 Vastbase 兼容性，不兼容的找到 pyvastbase 侧替代方案",
+      "status": "resolved"
+    },
+    {
+      "id": "D-05",
+      "category": "连接管理",
+      "question": "VastbaseVectorStore 连接管理策略？",
+      "options": ["双连接（sync engine + async engine）", "单一 VastbaseClient 统一管理"],
+      "impact": "决定适配器内部架构和 API 设计",
+      "recommendation": "单一 VastbaseClient 统一管理 — pyvastbase 的 VastbaseClient 统一管理连接池，去除上游 SQLAlchemy 双 engine 体系；通过 client.create_collection() / client.get_collection() 管理 Collection 对象，对应上游的表管理",
+      "status": "resolved"
+    }
+  ]
+}

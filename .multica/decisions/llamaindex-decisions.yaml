@@ -1,0 +1,38 @@
+framework: llamaindex
+version: 0.14.22
+integration_mode: standalone
+decisions:
+  - id: D-01
+    category: "API 风格"
+    question: "使用同步还是异步 API？"
+    decision: "同步 + 异步双实现"
+    rationale: "上游 PGVectorStore 已实现全部 sync/async 方法对，且 LlamaIndex 框架同时使用两种模式；pyvastbase 提供 VastbaseClient（同步）和 AsyncCollection（异步）双通道"
+    status: resolved
+
+  - id: D-02
+    category: "依赖策略"
+    question: "是否引入与 reference_backend 相同的依赖链，还是全部用 Vastbase 原生 API 替代？"
+    decision: "全部替换为 pyvastbase"
+    rationale: "需求明确要求用 pyvastbase 的 Collection API 替代 SQLAlchemy + pgvector 驱动栈；上游依赖链（psycopg2、asyncpg、sqlalchemy、pgvector）全部移除，仅依赖 pyvastbase>=0.2.7 + llama-index-core>=0.13.0,<0.15"
+    status: resolved
+
+  - id: D-03
+    category: "错误处理"
+    question: "沿用什么级别的错误处理策略？"
+    decision: "沿用上游 PGVectorStore 模式"
+    rationale: "使用 _logger.warning 记录非致命错误 + initialization_fail_on_error 参数控制是否抛出；保持 perform_setup 参数支持优雅降级"
+    status: resolved
+
+  - id: D-04
+    category: "功能裁剪"
+    question: "上游 PGVectorStore 的高级 PG 特性是否全部移植？"
+    decision: "全量移植所有功能"
+    rationale: "需求明确要求功能对等；实现上优先基础 CRUD + DEFAULT 向量检索，再逐步叠加 metadata 过滤、混合搜索 + MMR、半精度 + 高级索引；全文搜索和 JSONB 操作符需逐一验证 Vastbase 兼容性"
+    status: resolved
+
+  - id: D-05
+    category: "连接管理"
+    question: "VastbaseVectorStore 连接管理策略？"
+    decision: "单一 VastbaseClient 统一管理"
+    rationale: "pyvastbase 的 VastbaseClient 统一管理连接池，去除上游 SQLAlchemy 双 engine 体系；通过 client.create_collection() / client.get_collection() 管理 Collection 对象"
+    status: resolved
