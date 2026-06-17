@@ -15,10 +15,15 @@ from typing import Generator
 
 import pytest
 
-# Add repo root to path so llama_index imports work
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# Also add tests dir itself so test files can import from conftest
+# Add the tests directory to sys.path so test modules can import
+# ``from conftest import _make_table_name``. Do NOT add the repo
+# root — it shadows the installed ``llama_index`` namespace package.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# NOTE: Do NOT add the repo root to sys.path — the package is installed
+# in editable mode (``pip install -e .``). Adding the repo root would
+# shadow the installed ``llama_index`` package and break imports of
+# ``llama_index.core``.
 
 # Vastbase connection parameters from Multica workspace environment
 # Override via environment variables for CI/CD
