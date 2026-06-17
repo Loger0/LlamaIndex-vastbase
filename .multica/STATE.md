@@ -23,7 +23,33 @@
 - 方案架构：Faithful Adapter（忠实适配层）
 - 澄清决策：5 条（Q1-Q5，全部确认为 A）
 - 产出：Design Spec (14 节, 419 行) + Implementation Plan (16 TDD 任务)
-- Plan-Check: pending
+- Plan-Check: ✅ 通过
+- Convention Spec: ✅ 已提取 (.multica/conventions/llamaindex-conventions.yaml)
+
+### Phase 2: test-scout — 测试侦察与适配 ✅ 完成 — 2026-06-17
+
+- 目标框架测试分析：37 个上游测试场景（test_postgres.py）
+- Vastbase 适配测试产出：82 个测试（6 个测试文件）
+- 测试收集验证：✅ `pytest --collect-only` 成功（82 tests collected）
+- RED Phase 状态：测试全部预期 FAIL（VastbaseVectorStore 尚未实现）
+- Nyquist 覆盖率：100%（13 methods + 9 demo + 12 integration）
+- 产出物：
+  - `tests/conftest.py` — Vastbase 连接 fixtures + 节点数据 fixtures
+  - `tests/test_collection_init.py` — 9 tests
+  - `tests/test_crud.py` — 11 tests
+  - `tests/test_search.py` — 12 tests
+  - `tests/test_filter.py` — 18 tests
+  - `tests/test_async.py` — 12 tests
+  - `tests/test_integration.py` — 7 tests
+  - `tests/TEST_PLAN.md` — 测试交付报告
+  - `tests/NYQUIST_MAP.md` — Nyquist 验证映射表
+
+### Phase 3: convention-extractor — 规范提取 ✅ 完成 — 2026-06-17
+
+### Phase 4: implement — 待开始
+
+- Implement: pending
+- Framework Test: pending
 
 ### 关键决策 (TES-1)
 
@@ -69,12 +95,14 @@
 ### TES-1 (VectorStore)
 - `.multica/profiles/llamaindex-profile.json` — Framework Profile
 - `.multica/decisions/llamaindex-decisions.yaml` — 开放决策
-- `.multica/specs/llamaindex-spec.md` — Design Spec
-- `.multica/plans/llamaindex-plan.md` — Implementation Plan
+- `.multica/specs/llamaindex-spec.md` — Design Spec (14 节, 419 行)
+- `.multica/plans/llamaindex-plan.md` — Implementation Plan (16 TDD 任务)
+- `.multica/conventions/llamaindex-conventions.yaml` — Convention Spec (243 行)
+- `tests/TEST_PLAN.md` — 测试交付报告
+- `tests/NYQUIST_MAP.md` — Nyquist 验证映射表
 
 ### TES-2 (ChatStore)
 - `.multica/profiles/llamaindex-chat-store-postgres-profile.json` — Framework Profile
 - `.multica/decisions/llamaindex-chat-store-postgres-decisions.yaml` — 开放决策
-- `.multica/STATE.md` — 本文件
 
-- **最后更新**: 2026-06-17T03:00:00Z
+- **最后更新**: 2026-06-17 (test-scout 完成 TES-1)
