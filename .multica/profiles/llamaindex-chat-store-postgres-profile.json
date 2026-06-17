@@ -1,88 +1,67 @@
 {
   "framework": "llama-index-storage-chat-store-postgres",
   "version": "0.4.0",
-  "source_repo": "https://github.com/run-llama/llama_index",
+  "diagnosed_at": "2026-06-17T03:11:20Z",
   "integration_mode": "standalone",
-  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
-  "fork_target": null,
   "coupling_level": "low",
-  "files_to_modify": [],
+  "abstraction_type": "abstract_class",
+  "base_class": "BaseChatStore(BaseComponent)",
+  "reference_backend": "PostgresChatStore",
   "files_to_create": [
     "llama_index/storage/chat_store/vastbase/__init__.py",
     "llama_index/storage/chat_store/vastbase/base.py"
   ],
-  "abstraction_type": "abstract_class",
-  "base_class": "llama_index.core.storage.chat_store.base.BaseChatStore",
-  "reference_backend": "PostgresChatStore",
-  "required_methods": [
-    "set_messages(self, key: str, messages: List[ChatMessage]) -> None",
-    "get_messages(self, key: str) -> List[ChatMessage]",
-    "add_message(self, key: str, message: ChatMessage) -> None",
-    "delete_messages(self, key: str) -> Optional[List[ChatMessage]]",
-    "delete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
-    "delete_last_message(self, key: str) -> Optional[ChatMessage]",
-    "get_keys(self) -> List[str]",
-    "aset_messages(self, key: str, messages: List[ChatMessage]) -> None",
-    "aget_messages(self, key: str) -> List[ChatMessage]",
-    "async_add_message(self, key: str, message: ChatMessage) -> None",
-    "adelete_messages(self, key: str) -> Optional[List[ChatMessage]]",
-    "adelete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
-    "adelete_last_message(self, key: str) -> Optional[ChatMessage]",
-    "aget_keys(self) -> List[str]"
-  ],
-  "test_infrastructure": "full",
-  "test_directory": "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/tests/",
-  "test_strategy": "extract_official",
-  "demo": {
-    "type": "RAG chatbot history persistence API validation",
-    "scenarios": [
-      "连接初始化：from_params / from_uri 创建 VastbaseChatStore 实例",
-      "全量设置消息：set_messages / aset_messages 覆盖写入",
-      "追加消息：add_message / async_add_message 向已有 key 追加",
-      "获取消息：get_messages / aget_messages 返回 ChatMessage 列表",
-      "按索引删除：delete_message / adelete_message 删除指定位置消息",
-      "删除最后一条：delete_last_message / adelete_last_message",
-      "删除全部：delete_messages / adelete_messages 删除 key 下所有消息",
-      "获取所有 keys：get_keys / aget_keys",
-      "多模态消息：TextBlock + ImageBlock 序列化/反序列化往返",
-      "旧表兼容：data_ 前缀 table 检测与使用",
-      "JSONB 模式：use_jsonb=True 存储模式验证"
+  "files_to_modify": [],
+  "required_methods": {
+    "sync": [
+      "set_messages",
+      "get_messages",
+      "add_message",
+      "delete_messages",
+      "delete_message",
+      "delete_last_message",
+      "get_keys"
     ],
-    "validation_criteria": "所有 14 个方法（7 sync + 7 async）行为与上游 PostgresChatStore v0.4.0 完全对等，ChatMessage 序列化格式兼容，多模态 blocks 完整往返"
+    "async": [
+      "aset_messages",
+      "aget_messages",
+      "async_add_message",
+      "adelete_messages",
+      "adelete_message",
+      "adelete_last_message",
+      "aget_keys"
+    ]
   },
-  "convention_references": [
-    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/llama_index/storage/chat_store/postgres/base.py",
-    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/llama_index/storage/chat_store/postgres/__init__.py",
-    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/tests/test_chat_store_postgres_chat_store.py",
-    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/pyproject.toml"
-  ],
-  "open_decisions": [
-    {
-      "id": "D-01",
-      "category": "API 风格",
-      "question": "使用同步还是异步 API？",
-      "options": ["仅同步", "同步+原生异步双实现", "仅异步"],
-      "impact": "决定 VastbaseChatStore 的方法数量和实现复杂度",
-      "recommendation": "同步+原生异步双实现（7+7=14 方法）— 上游 PostgresChatStore 覆写了全部 7 个异步方法为原生 async（使用 AsyncSession），且 BaseChatStore 基类定义了 14 个方法；VastbaseChatStore 应对等实现以保证 drop-in replacement 语义",
-      "status": "resolved"
-    },
-    {
-      "id": "D-02",
-      "category": "依赖策略",
-      "question": "是否引入与上游相同的依赖还是用 Vastbase 原生 SDK？",
-      "options": ["保留 sqlalchemy + psycopg + asyncpg", "完全替换为 pyvastbase"],
-      "impact": "决定依赖栈和实现方式，影响适配后的包体积和部署复杂度",
-      "recommendation": "完全替换为 pyvastbase >= 0.2.7（VastbaseClient + Collection + AsyncCollection），移除 sqlalchemy / psycopg / asyncpg 全部 PG 生态依赖。pyvastbase 提供 PyMilvus-style Collection API，可替代动态 ORM 模型生成、连接管理、Schema 创建等上游功能",
-      "status": "resolved"
-    },
-    {
-      "id": "D-03",
-      "category": "错误处理",
-      "question": "沿用什么级别的错误处理策略？",
-      "options": ["严格抛异常", "静默 None/空列表（与上游一致）", "日志+异常"],
-      "impact": "决定 VastbaseChatStore 在边界情况下的行为语义",
-      "recommendation": "与上游 PostgresChatStore 一致：删除操作返回 None 或删除的消息（不抛异常），获取不存在的 key 返回空列表，索引越界返回 None。保持 drop-in replacement 的完全语义兼容",
-      "status": "resolved"
+  "test_strategy": {
+    "level": "full",
+    "upstream_test_count": 15,
+    "layers": [
+      "unit (pyvastbase mock)",
+      "integration (real Vastbase)",
+      "compatibility (drop-in replacement verification)"
+    ]
+  },
+  "demo": {
+    "notebook": false,
+    "script": true,
+    "description": "Simple script demonstrating VastbaseChatStore CRUD operations"
+  },
+  "open_decisions": [],
+  "dependencies": {
+    "retain": ["llama-index-core>=0.13.0,<0.15"],
+    "replace": {
+      "sqlalchemy": "pyvastbase>=0.2.7",
+      "psycopg>=3.0.0": "pyvastbase>=0.2.7",
+      "asyncpg>=0.30.0": "pyvastbase>=0.2.7"
     }
-  ]
+  },
+  "vastbase_connection": {
+    "host": "172.16.105.107",
+    "port": 15432,
+    "database": "vastbase",
+    "user": "aidev"
+  },
+  "target_package": "llama-index-storage-chat-store-vastbase",
+  "target_version": "0.1.0",
+  "target_class": "VastbaseChatStore"
 }
