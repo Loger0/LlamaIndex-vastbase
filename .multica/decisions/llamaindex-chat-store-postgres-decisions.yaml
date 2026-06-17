@@ -1,0 +1,22 @@
+framework: llama-index-storage-chat-store-postgres
+version: 0.4.0
+integration_mode: standalone
+decisions:
+  - id: D-01
+    category: 'API 风格'
+    question: '使用同步还是异步 API？'
+    decision: '同步+原生异步双实现（7+7=14 方法）— 上游 PostgresChatStore 覆写了全部 7 个异步方法为原生 async，VastbaseChatStore 应对等实现以保证 drop-in replacement 语义'
+    rationale: 'BaseChatStore 基类定义了 7 个同步抽象方法 + 7 个异步方法（默认通过 asyncio.to_thread 包装），上游 PostgresChatStore 全部覆写为原生 async（使用 AsyncSession + asyncpg 驱动）以提供真正的异步 IO。VastbaseChatStore 需对等实现 14 个方法'
+    status: resolved
+  - id: D-02
+    category: '依赖策略'
+    question: '是否引入与上游相同的依赖？'
+    decision: '完全替换为 pyvastbase >= 0.2.7，移除 sqlalchemy / psycopg / asyncpg 全部 PG 生态依赖'
+    rationale: 'pyvastbase 提供 PyMilvus-style Collection API（VastbaseClient + Collection + AsyncCollection），可替代 SQLAlchemy 动态 ORM 模型生成、连接管理、Schema 创建、CRUD 操作。同时 Vastbase 基于 PostgreSQL 协议，原生兼容 PG 语法'
+    status: resolved
+  - id: D-03
+    category: '错误处理'
+    question: '沿用什么级别的错误处理策略？'
+    decision: '与上游 PostgresChatStore 一致：删除操作返回 None 或删除的消息（不抛异常），获取不存在的 key 返回空列表，索引越界返回 None'
+    rationale: '保持 drop-in replacement 的完全语义兼容。上游 delete_messages 返回 None（不返回实际消息列表），delete_message 索引越界返回 None，get_messages 不存在 key 返回 []'
+    status: resolved
