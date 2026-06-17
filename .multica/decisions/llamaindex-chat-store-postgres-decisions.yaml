@@ -1,22 +1,76 @@
+# LlamaIndex ChatStore Vastbase 适配 — 架构决策记录
+# Framework: llama-index-storage-chat-store-postgres v0.4.0
+# Created: 2026-06-17
+# Updated: 2026-06-17 (Plan-Check Round 1 修正)
+
 framework: llama-index-storage-chat-store-postgres
 version: 0.4.0
 integration_mode: standalone
+
 decisions:
-  - id: D-01
-    category: 'API 风格'
-    question: '使用同步还是异步 API？'
-    decision: '同步+原生异步双实现（7+7=14 方法）— 上游 PostgresChatStore 覆写了全部 7 个异步方法为原生 async，VastbaseChatStore 应对等实现以保证 drop-in replacement 语义'
-    rationale: 'BaseChatStore 基类定义了 7 个同步抽象方法 + 7 个异步方法（默认通过 asyncio.to_thread 包装），上游 PostgresChatStore 全部覆写为原生 async（使用 AsyncSession + asyncpg 驱动）以提供真正的异步 IO。VastbaseChatStore 需对等实现 14 个方法'
-    status: resolved
-  - id: D-02
-    category: '依赖策略'
-    question: '是否引入与上游相同的依赖？'
-    decision: '完全替换为 pyvastbase >= 0.2.7，移除 sqlalchemy / psycopg / asyncpg 全部 PG 生态依赖'
-    rationale: 'pyvastbase 提供 PyMilvus-style Collection API（VastbaseClient + Collection + AsyncCollection），可替代 SQLAlchemy 动态 ORM 模型生成、连接管理、Schema 创建、CRUD 操作。同时 Vastbase 基于 PostgreSQL 协议，原生兼容 PG 语法'
-    status: resolved
-  - id: D-03
-    category: '错误处理'
-    question: '沿用什么级别的错误处理策略？'
-    decision: '与上游 PostgresChatStore 一致：删除操作返回 None 或删除的消息（不抛异常），获取不存在的 key 返回空列表，索引越界返回 None'
-    rationale: '保持 drop-in replacement 的完全语义兼容。上游 delete_messages 返回 None（不返回实际消息列表），delete_message 索引越界返回 None，get_messages 不存在 key 返回 []'
-    status: resolved
+  D-01:
+    category: "API 风格"
+    resolution: >
+      同步 + 原生异步双实现（7+7=14 方法，全部显式覆写，完全对等上游 PostgresChatStore）。
+      异步方法使用 pyvastbase AsyncCollection + AsyncConnections 实现原生 async I/O，
+      不依赖基类 BaseChatStore 的 asyncio.to_thread() 默认实现。
+      每个异步方法必须独立管理 AsyncCollection 生命周期（connect → use → release）。
+    rationale: >
+      上游 PostgresChatStore 14 个方法全部原生实现——同步用 psycopg + SQLAlchemy sync engine，
+      异步用 asyncpg + SQLAlchemy async engine。pyvastbase 提供 AsyncCollection +
+      AsyncConnections 原生异步 API，具备完整实现条件。基类 asyncio.to_thread() 默认实现
+      仅用于没有原生异步后端的 fallback 场景，不适用于 Vastbase 适配。
+    status: confirmed
+    plan_check_status: resolved (Round 1)
+
+  D-02:
+    category: "依赖策略"
+    resolution: >
+      完全替换为 pyvastbase Collection API（Collection + AsyncCollection），
+      移除 sqlalchemy、psycopg、asyncpg。pyproject.toml 仅声明 llama-index-core 和 pyvastbase。
+    rationale: >
+      Vastbase 生态适配的核心目标是用 pyvastbase 统一替代 PostgreSQL 驱动栈。
+      standalone 模式下仅需新增 2 个文件，零框架源码修改。
+    status: confirmed
+
+  D-03:
+    category: "错误处理"
+    resolution: >
+      与上游 PostgresChatStore 保持完全一致的错误处理语义：
+      - get_messages: key 不存在 → 返回空列表 []
+      - delete_messages: key 不存在 → 返回 None
+      - delete_message: key 不存在或 idx 越界 → 返回 None
+      - delete_last_message: key 不存在或数组为空 → 返回 None
+      - get_keys: 表为空 → 返回空列表 []
+      - set_messages / add_message: 不抛异常，静默成功
+      网络/连接异常由 pyvastbase 抛出，不额外包装。
+    status: confirmed
+
+  D-04:
+    category: "Collection Schema"
+    resolution: >
+      单行 per key 方案：每条 key 一行，value 存整个 List[ChatMessage] 的 JSON 序列化字符串。
+      Schema: id (INT64, PK, auto_id) | key (VARCHAR, 512) | value (TEXT)。
+      消息数组操作（追加、按索引删除、删最后一条）在 Python 层完成：SELECT → list 操作 → UPDATE。
+    rationale: >
+      与上游 PostgresChatStore 数据模型一致（一行 per key）。
+      pyvastbase 无原生 PG ARRAY 类型且禁止直接 SQL，数组操作必须在 Python 层完成。
+      ChatStore 消息数通常很小（单会话 < 1000 条），全量 SELECT + 写回性能可接受。
+    status: confirmed
+
+  D-05:
+    category: "URI 格式"
+    resolution: >
+      使用 vastbase:// 专属 scheme：vastbase://user:pass@host:port/db。
+      from_uri() 用 urllib.parse.urlparse 解析，from_params() 用独立参数。
+    status: confirmed
+
+  D-06:
+    category: "Collection 管理"
+    resolution: >
+      使用 pyvastbase Collection API 管理表生命周期：
+      - 创建：Collection(name, schema) + col.create() → 等价上游 CREATE TABLE
+      - 检测已存在：has_collection(name) → 等价上游 inspect.get_table_names()
+      - 旧表兼容：has_collection("data_{table_name}") 检测旧 collection，存在则使用旧名
+      - Schema 创建：pyvastbase connect() 时自动连接目标数据库，schema 通过 PostgreSQL search_path 管理
+    status: confirmed
