@@ -1,0 +1,49 @@
+decisions:
+  - id: D-01
+    category: "API风格"
+    decision: "同步+异步对等实现"
+    rationale: "PGVectorStore 提供完整的 sync + async 双 API，Vastbase 适配器应保持对等"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-02
+    category: "依赖策略"
+    decision: "全部替换为 pyvastbase"
+    rationale: "移除 psycopg2-binary, asyncpg, pgvector, sqlalchemy[asyncio]，统一使用 pyvastbase>=0.2.0"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-03
+    category: "错误处理"
+    decision: "混合策略（可配置 fail_on_error）"
+    rationale: "与 PGVectorStore 的 initialization_fail_on_error 参数一致，初始化阶段 catch+warn，运行时冒泡"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-04
+    category: "MMR支持"
+    decision: "与 PG 一致，不实现 MMR（抛 ValueError）"
+    rationale: "用户明确回复「和pg一致就行」，MMR 在 VectorStore 层面不实现"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-05
+    category: "降级策略"
+    decision: "客户端降级（ILIKE + 内存过滤 fallback）"
+    rationale: "用户选择方案 A，适配器内部实现 fallback，用户无感知"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-06
+    category: "混合搜索"
+    decision: "pyvastbase 原生 hybrid_search + RRF"
+    rationale: "用户选择方案 A，使用 pyvastbase Collection.hybrid_search(RRFRanker)，语义等价且更优"
+    status: confirmed
+    confirmed_by: "user"
+
+  - id: D-07
+    category: "文件结构"
+    decision: "单文件实现（base.py ~800-1000 行）"
+    rationale: "用户选择方案 A，与上游 PGVectorStore 结构一致"
+    status: confirmed
+    confirmed_by: "user"
