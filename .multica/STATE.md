@@ -21,6 +21,15 @@
 - 测试基础设施：partial（有官方测试但需扩展）
 - 开放决策：5 条（已全部自动 resolve）
 
+### Phase 1: eco-issue-analyst — 需求分析与方案设计 ✅ 完成 — 2026-06-17T10:36:00Z
+
+- 方案架构：Faithful Adapter（忠实适配层）
+- 澄清决策：5 条（Q1-Q5，全部确认为 A）
+- 产出：Design Spec (14 节, 419 行) + Implementation Plan (16 TDD 任务)
+- Plan-Check: pending
+- Implement: pending
+- Framework Test: pending
+
 ## 关键决策
 
 | ID | 决策类别 | 问题 | 决议 | 状态 |
@@ -36,3 +45,6 @@
 - `.multica/profiles/llamaindex-profile.json` — Framework Profile（诊断报告）
 - `.multica/decisions/llamaindex-decisions.yaml` — 开放决策（已 resolve）
 - `.multica/STATE.md` — 本文件
+- `.multica/specs/llamaindex-spec.md` — Design Spec（14 节, 419 行）
+- `.multica/plans/llamaindex-plan.md` — Implementation Plan（16 TDD 任务）
+- **最后更新**: 2026-06-17T10:36:00Z
