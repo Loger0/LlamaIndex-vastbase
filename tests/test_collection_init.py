@@ -9,6 +9,8 @@ Adapted from PGVectorStore tests:
 All tests use pyvastbase API exclusively — no SQLAlchemy, no psycopg2, no raw SQL.
 """
 
+import asyncio
+
 import pytest
 
 from llama_index.vector_stores.vastbase import VastbaseVectorStore
@@ -39,7 +41,7 @@ def test_vastbase_instance_creation():
     assert isinstance(store, VastbaseVectorStore)
     # Client should be None before first operation (lazy init)
     assert store.client is None
-    store.close()
+    asyncio.run(store.close())
 
 
 @pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
@@ -60,7 +62,7 @@ def test_from_params_defaults():
     assert store.use_jsonb is False
     assert store.perform_setup is True
     assert store.debug is False
-    store.close()
+    asyncio.run(store.close())
 
 
 @pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
@@ -98,7 +100,7 @@ def test_from_params_custom():
         "hnsw_ef_construction": 128,
         "hnsw_ef_search": 80,
     }
-    store.close()
+    asyncio.run(store.close())
 
 
 # ---------------------------------------------------------------------------
@@ -208,4 +210,4 @@ def test_collection_name_format():
     )
     # Collection name should be deterministic based on table_name
     assert store._collection_name == "data_my_table"
-    store.close()
+    asyncio.run(store.close())
