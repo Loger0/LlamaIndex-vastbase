@@ -41,39 +41,26 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _ImmediateAwaitable:
-    """An awaitable whose side-effects run immediately on construction.
+async def _noop_coroutine() -> None:
+    """A no-op coroutine used as the return value of ``close()``.
 
-    Used by ``close()`` so that both sync and async callers work:
+    ``close()`` runs all cleanup synchronously before returning this
+    coroutine.  Returning a real coroutine object (from ``async def``)
+    ensures compatibility with ``asyncio.run()``, which calls
+    ``inspect.iscoroutine()`` — a check that custom ``__await__``-based
+    awaitables like the former ``_ImmediateAwaitable`` do not pass on
+    Python 3.13+.
 
-    - Sync: ``store.close()`` → cleanup runs immediately in ``__init__``;
-      the returned ``_ImmediateAwaitable`` is discarded.
-    - Async: ``await store.close()`` → cleanup already ran in ``__init__``;
-      ``await`` returns immediately via a completed Future.
-    - ``asyncio.get_event_loop().run_until_complete(store.close())`` →
-      same as the async path.
+    Calling patterns supported:
+
+    - Sync: ``store.close()`` → cleanup runs immediately; the returned
+      coroutine is discarded (never awaited).
+    - Async: ``await store.close()`` → cleanup already ran; the no-op
+      coroutine returns immediately.
+    - ``asyncio.run(store.close())`` → works because the return value
+      passes ``inspect.iscoroutine()``.
     """
-
-    __slots__ = ()
-
-    def __await__(self):  # type: ignore[no-untyped-def]
-        # Create a completed Future on whatever loop is available.
-        # Gracefully handle the case where no event loop exists
-        # (Python 3.13 deprecated get_event_loop without a running loop).
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        if loop is None:
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        f: asyncio.Future = loop.create_future()
-        f.set_result(None)
-        return f.__await__()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -471,14 +458,23 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             index_params=index_params,
         )
 
-    def close(self) -> _ImmediateAwaitable:
+    def close(self):
         """Close the VastbaseVectorStore and release all resources.
 
         Cleanup runs immediately on call (synchronous).  The returned
-        ``_ImmediateAwaitable`` allows ``await store.close()`` and
-        ``run_until_complete(store.close())`` to work without error.
+        coroutine (from ``_noop_coroutine``) allows ``await store.close()``
+        and ``asyncio.run(store.close())`` to work without error.
         Closes both the sync VastbaseClient and the async collection
         if either is open.
+
+        Calling patterns supported:
+
+        - Sync: ``store.close()`` — cleanup runs immediately; returned
+          coroutine is discarded (may emit RuntimeWarning).
+        - Async: ``await store.close()`` — cleanup already ran; returns
+          immediately.
+        - ``asyncio.run(store.close())`` — works because return value
+          passes ``inspect.iscoroutine()``.
         """
         if self._async_collection is not None:
             try:
@@ -495,7 +491,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             self._client = None
         self._is_initialized = False
         self._async_initialized = False
-        return _ImmediateAwaitable()
+        return _noop_coroutine()
 
     async def aclose(self) -> None:
         """Alias for :meth:`close` — provided for explicit async naming.

@@ -366,7 +366,7 @@ def test_mmr_aquery_raises_value_error(vb: VastbaseVectorStore) -> None:
         mode=VectorStoreQueryMode.MMR,
     )
     with pytest.raises(ValueError, match="MMR is not supported"):
-        asyncio.get_event_loop().run_until_complete(vb.aquery(q))
+        asyncio.run(vb.aquery(q))
 
 
 def test_mmr_diverse_selection_utility() -> None:
