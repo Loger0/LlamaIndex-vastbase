@@ -1,0 +1,59 @@
+# LlamaIndex ChatStore Vastbase 适配 — 框架诊断决策记录
+# Framework Analyzer — 2026-06-18
+
+framework: llama-index-storage-chat-store-postgres
+version: "0.2.0"
+integration_mode: plugin
+adapter_repo: https://github.com/Loger0/LlamaIndex-vastbase.git
+feature_branch: feature/llamaindex-chat-store-vastbase-adapter
+
+decisions:
+  - id: D-01
+    category: 'API 风格'
+    question: '使用同步+to_thread 异步还是原生异步？'
+    decision: 'sync + native async (dual implementation) — 14 个方法全部显式覆写'
+    rationale: |
+      pyvastbase 提供 AsyncCollection + AsyncConnections 原生异步能力。
+      上游 PostgresChatStore 使用 asyncpg 原生异步，覆写了全部 7 个异步方法。
+      为保持完全对等，VastbaseChatStore 也应使用 pyvastbase 原生异步，
+      不依赖基类的 asyncio.to_thread() 默认实现。
+    status: resolved
+
+  - id: D-02
+    category: '依赖策略'
+    question: '是否保留 SQLAlchemy 还是完全替换为 pyvastbase？'
+    decision: '完全替换为 pyvastbase Collection API，移除 sqlalchemy + psycopg + asyncpg'
+    rationale: |
+      pyvastbase 提供 Collection API 管理向量数据，禁止直接 SQL。
+      上游使用 SQLAlchemy ORM + psycopg（同步）+ asyncpg（异步）。
+      适配版完全替换为 pyvastbase：
+        - sqlalchemy.create_engine → pyvastbase.connect()
+        - sessionmaker → Collection / AsyncCollection
+        - asyncpg → pyvastbase AsyncConnections
+      pyproject.toml 仅依赖 pyvastbase>=0.2.7 + llama-index-core>=0.12.0,<0.15。
+    status: resolved
+
+  - id: D-03
+    category: '测试环境'
+    question: '是否需要搭建 Docker Vastbase 测试实例还是使用已有实例？'
+    decision: '使用已有 Vastbase 实例 (172.16.105.107:15432)'
+    rationale: |
+      上游使用 Docker postgres:latest 容器运行集成测试。
+      Vastbase 镜像不在公共 Docker Hub，搭建 Docker 容器增加 CI 复杂度。
+      已有 Vastbase 实例就绪（host: 172.16.105.107, port: 15432），
+      直接连接可减少环境搭建成本，加快开发迭代。
+    status: resolved
+
+  - id: D-04
+    category: '错误处理'
+    question: '沿用什么级别的错误处理策略？'
+    decision: 'Silent None/empty list — 与上游完全一致'
+    rationale: |
+      上游 PostgresChatStore 对 key 不存在的情况返回空列表或 None：
+        - get_messages(unknown_key) → []
+        - delete_message(unknown_key, idx) → None
+        - delete_last_message(unknown_key) → None
+      VastbaseChatStore 保持相同语义，确保作为 PostgresChatStore 的
+      drop-in replacement 时用户代码无需修改异常处理逻辑。
+      基础设施异常（连接失败、Collection 不存在等）向上传播。
+    status: resolved

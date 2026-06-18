@@ -1,0 +1,111 @@
+{
+  "framework": "llama-index-storage-chat-store-postgres",
+  "version": "0.2.0",
+  "source_repo": "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres",
+  "integration_mode": "plugin",
+  "adapter_repo": "https://github.com/Loger0/LlamaIndex-vastbase.git",
+  "fork_target": null,
+  "coupling_level": "low",
+  "files_to_modify": [],
+  "files_to_create": [
+    "llama_index/storage/chat_store/vastbase/__init__.py",
+    "llama_index/storage/chat_store/vastbase/base.py"
+  ],
+  "abstraction_type": "abstract_class",
+  "base_class": "BaseChatStore(BaseComponent)",
+  "reference_backend": "PostgresChatStore",
+  "required_methods": [
+    "set_messages(self, key: str, messages: List[ChatMessage]) -> None",
+    "get_messages(self, key: str) -> List[ChatMessage]",
+    "add_message(self, key: str, message: ChatMessage) -> None",
+    "delete_messages(self, key: str) -> Optional[List[ChatMessage]]",
+    "delete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
+    "delete_last_message(self, key: str) -> Optional[ChatMessage]",
+    "get_keys(self) -> List[str]"
+  ],
+  "async_methods": [
+    "aset_messages(self, key: str, messages: List[ChatMessage]) -> None",
+    "aget_messages(self, key: str) -> List[ChatMessage]",
+    "async_add_message(self, key: str, message: ChatMessage) -> None",
+    "adelete_messages(self, key: str) -> Optional[List[ChatMessage]]",
+    "adelete_message(self, key: str, idx: int) -> Optional[ChatMessage]",
+    "adelete_last_message(self, key: str) -> Optional[ChatMessage]",
+    "aget_keys(self) -> List[str]"
+  ],
+  "async_strategy": "native_pyvastbase_async",
+  "test_infrastructure": "partial",
+  "test_directory": "tests/",
+  "test_strategy": "extend_partial",
+  "upstream_test_count": 13,
+  "upstream_test_type": "docker_integration",
+  "demo": {
+    "type": "script",
+    "scenarios": [
+      "Sync: set_messages → get_messages → add_message → delete_message → delete_last_message → delete_messages",
+      "Async: aset_messages → aget_messages → async_add_message → adelete_message → adelete_last_message → adelete_messages",
+      "get_keys with multiple keys",
+      "Drop-in replacement: VastbaseChatStore used as PostgresChatStore"
+    ],
+    "validation_criteria": "All 7 sync + 7 async methods produce identical results to PostgresChatStore for same inputs"
+  },
+  "convention_references": [
+    "llama_index/storage/chat_store/postgres/base.py",
+    "llama_index/core/storage/chat_store/base.py",
+    "llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres/pyproject.toml"
+  ],
+  "dependencies": {
+    "retain": ["llama-index-core>=0.12.0,<0.15"],
+    "replace": {
+      "sqlalchemy": "pyvastbase>=0.2.7",
+      "psycopg>=3.0.0": "pyvastbase>=0.2.7",
+      "asyncpg>=0.29.0": "pyvastbase>=0.2.7"
+    }
+  },
+  "target_package": "llama-index-storage-chat-store-vastbase",
+  "target_version": "0.1.0",
+  "target_class": "VastbaseChatStore",
+  "vastbase_connection": {
+    "host": "172.16.105.107",
+    "port": 15432,
+    "database": "vastbase",
+    "user": "aidev"
+  },
+  "open_decisions": [
+    {
+      "id": "D-01",
+      "category": "API 风格",
+      "question": "使用同步+to_thread 异步还是原生异步？",
+      "options": ["sync + asyncio.to_thread async", "sync + native async (dual implementation)"],
+      "impact": "决定是否需要实现 14 个方法还是 7 个",
+      "recommendation": "sync + native async (dual implementation) — pyvastbase 提供 AsyncCollection + AsyncConnections 原生异步，与上游 PostgresChatStore 完全对等",
+      "status": "resolved"
+    },
+    {
+      "id": "D-02",
+      "category": "依赖策略",
+      "question": "是否保留 SQLAlchemy 还是完全替换为 pyvastbase？",
+      "options": ["保留 SQLAlchemy ORM + 替换驱动", "完全替换为 pyvastbase Collection API"],
+      "impact": "决定数据模型层实现方式",
+      "recommendation": "完全替换为 pyvastbase — 禁止直接 SQL，所有向量操作必须映射到 pyvastbase Collection API",
+      "status": "resolved"
+    },
+    {
+      "id": "D-03",
+      "category": "测试环境",
+      "question": "是否需要搭建 Docker 测试实例还是使用已有 Vastbase 实例？",
+      "options": ["Docker Vastbase container (like upstream)", "Existing Vastbase instance (172.16.105.107:15432)"],
+      "impact": "决定 CI/CD 配置和测试隔离性",
+      "recommendation": "使用已有 Vastbase 实例 — 降低 CI 复杂度，Vastbase 实例已就绪",
+      "status": "resolved"
+    },
+    {
+      "id": "D-04",
+      "category": "错误处理",
+      "question": "沿用什么级别的错误处理策略？",
+      "options": ["Silent None/empty list (matches upstream)", "Explicit exceptions with error codes"],
+      "impact": "决定用户代码的异常处理复杂度",
+      "recommendation": "Silent None/empty list — 与上游 PostgresChatStore 保持一致，保持 drop-in replacement 语义",
+      "status": "resolved"
+    }
+  ]
+}
