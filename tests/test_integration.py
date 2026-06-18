@@ -191,8 +191,6 @@ def test_hybrid_search_e2e():
             pass
 
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-        except Exception:
-            pass
 
         nodes = [
             TextNode(
@@ -339,8 +337,6 @@ def test_customize_search_fn_integration():
             pass
 
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-        except Exception:
-            pass
 
         node = TextNode(
             text="test",
