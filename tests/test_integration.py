@@ -13,7 +13,6 @@ All tests use pyvastbase API exclusively — no SQLAlchemy, no psycopg2, no raw 
 """
 
 import pytest
-import asyncio
 from typing import List
 
 from llama_index.core.schema import BaseNode, IndexNode, TextNode
@@ -155,7 +154,7 @@ def test_full_crud_lifecycle():
         assert len(final) == 0
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
 
 
 # ============================================================================
@@ -226,7 +225,7 @@ def test_hybrid_search_e2e():
         assert "fox2" in node_ids
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
 
 
 # ============================================================================
@@ -276,7 +275,7 @@ def test_index_node_roundtrip():
         assert isinstance(res.nodes[1], TextNode)
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
 
 
 # ============================================================================
@@ -328,7 +327,7 @@ def test_customize_search_fn_integration():
         assert "limit" in call_log[0] or "expr" in call_log[0]
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
 
 
 # ============================================================================
@@ -401,5 +400,5 @@ def test_multiple_stores_isolation():
         store_b.clear()
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store_a.close())
-        asyncio.get_event_loop().run_until_complete(store_b.close())
+        store_a.close()
+        store_b.close()
