@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from llama_index.core.bridge.pydantic import PrivateAttr
-from llama_index.core.schema import BaseNode, TextNode
+from llama_index.core.schema import BaseNode, NodeRelationship, TextNode
 from llama_index.core.vector_stores.types import (
     BasePydanticVectorStore,
     FilterCondition,
@@ -105,7 +105,11 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     _client: Any = PrivateAttr(default=None)
     _async_collection: Any = PrivateAttr(default=None)
     _is_initialized: bool = PrivateAttr(default=False)
+    _async_initialized: bool = PrivateAttr(default=False)
     _collection_name: str = PrivateAttr(default=None)
+    # TODO(Wave 2): integrate _customize_search_fn into query()/aquery()
+    # Currently stored but never called. Should allow users to inject custom
+    # search parameter overrides (e.g. ef_search, reranking) before search().
     _customize_search_fn: Optional[Callable] = PrivateAttr(default=None)
 
     # ------------------------------------------------------------------
@@ -120,6 +124,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         self._client = None
         self._async_collection = None
         self._is_initialized = False
+        self._async_initialized = False
         self._collection_name = f"data_{self.table_name}"
         self._customize_search_fn = customize_search_fn
 
@@ -222,6 +227,34 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         self._is_initialized = True  # Only reached on the success path
 
+    async def _ensure_async_connection(self) -> None:
+        """Ensure the async connection pool is established for AsyncCollection.
+
+        AsyncCollection requires a separate async connection registered via
+        ``AsyncConnections.connect()`` before it can be used.  This method
+        is idempotent — once ``_async_initialized`` is True it returns
+        immediately.
+        """
+        if self._async_initialized:
+            return
+
+        from pyvastbase import AsyncConnections
+
+        try:
+            await AsyncConnections.connect(
+                alias="default",
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password,
+            )
+            self._async_initialized = True
+        except Exception as e:
+            if self.initialization_fail_on_error:
+                raise
+            _logger.warning("Async connection initialization failed: %s", e)
+
     def _create_collection_if_not_exists(self) -> None:
         """Create the Vastbase collection with the required schema.
 
@@ -268,7 +301,6 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
 
         schema = CollectionSchema(name=self._collection_name, fields=fields)
-        required_field_names = {f.name for f in fields}
         try:
             self._client.create_collection(self._collection_name, schema=schema)
         except Exception as e:
@@ -330,6 +362,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             self._client = None
         self._async_collection = None
         self._is_initialized = False
+        self._async_initialized = False
 
     async def aclose(self) -> None:
         """Async close for use with AsyncCollection."""
@@ -344,6 +377,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             self._client.close()
             self._client = None
         self._is_initialized = False
+        self._async_initialized = False
 
     # ------------------------------------------------------------------
     # Data conversion helpers
@@ -357,7 +391,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         """
         # Determine ref_doc_id from SOURCE relationship
         ref_doc_id = node.node_id
-        source_rel = node.relationships.get("SOURCE")
+        source_rel = node.relationships.get(NodeRelationship.SOURCE)
         if source_rel is not None:
             ref_doc_id = source_rel.node_id
 
@@ -493,13 +527,18 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         return db_expr, client_mf
 
+    @staticmethod
+    def _escape(s: Any) -> str:
+        """Escape single quotes for safe interpolation in expr strings."""
+        return str(s).replace("'", "''")
+
     def _build_single_filter_clause(self, f: Any) -> Optional[str]:
         """Build an expr fragment for a single MetadataFilter.
 
         All metadata is stored in a single JSONB column ``metadata_``,
         so every filter accesses ``metadata_->>'<key>'``.
         """
-        key = f.key
+        key = self._escape(f.key)
         value = f.value
         op = f.operator
         field = f"metadata_->>'{key}'"
@@ -511,19 +550,19 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         # --- IN / NIN ---
         if op in (FilterOperator.IN, FilterOperator.NIN):
             values = value if isinstance(value, (list, tuple)) else [value]
-            vals_str = ", ".join(f"'{v}'" for v in values)
+            vals_str = ", ".join(f"'{self._escape(v)}'" for v in values)
             kw = "IN" if op == FilterOperator.IN else "NOT IN"
             return f"{field} {kw} ({vals_str})"
 
         # --- TEXT_MATCH / TEXT_MATCH_INSENSITIVE ---
         if op in (FilterOperator.TEXT_MATCH, FilterOperator.TEXT_MATCH_INSENSITIVE):
-            return f"{field} ILIKE '%{value}%'"
+            return f"{field} ILIKE '%{self._escape(value)}%'"
 
         # --- String equality / inequality ---
         if op == FilterOperator.EQ:
-            return f"{field} = '{value}'"
+            return f"{field} = '{self._escape(value)}'"
         if op == FilterOperator.NE:
-            return f"{field} != '{value}'"
+            return f"{field} != '{self._escape(value)}'"
 
         # --- Numeric comparisons (cast to float) ---
         numeric_ops = {
@@ -538,7 +577,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         # Fallback: treat as string equality
         _logger.warning("Unknown filter operator %s; falling back to EQ", op)
-        return f"{field} = '{value}'"
+        return f"{field} = '{self._escape(value)}'"
 
     # ------------------------------------------------------------------
     # Client-side filter matching (ANY / ALL / CONTAINS)
@@ -696,14 +735,16 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         if not nodes:
             return []
 
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
         fail_on_error = kwargs.get("fail_on_error", True)
         rows = [self._node_to_row_dict(n) for n in nodes]
 
         try:
-            async with AsyncCollection(self._collection_name) as col:
-                await col.insert(rows)
+            col = AsyncCollection(self._collection_name)
+            await col.insert(rows)
         except Exception as e:
             if fail_on_error:
                 raise
@@ -719,17 +760,19 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """Delete all rows whose ``ref_doc_id`` matches."""
         self._initialize()
-        expr = f"ref_doc_id = '{ref_doc_id}'"
+        expr = f"ref_doc_id = '{self._escape(ref_doc_id)}'"
         self._client.delete(self._collection_name, expr=expr)
 
     async def adelete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
         """Async version of ``delete()``."""
         self._initialize()
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
-        expr = f"ref_doc_id = '{ref_doc_id}'"
-        async with AsyncCollection(self._collection_name) as col:
-            await col.delete(expr=expr)
+        expr = f"ref_doc_id = '{self._escape(ref_doc_id)}'"
+        col = AsyncCollection(self._collection_name)
+        await col.delete(expr=expr)
 
     # ------------------------------------------------------------------
     # CRUD — delete_nodes
@@ -750,7 +793,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         client_filters = None
 
         if node_ids:
-            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            ids_str = ", ".join(f"'{self._escape(nid)}'" for nid in node_ids)
             expr_parts.append(f"node_id IN ({ids_str})")
 
         if filters is not None:
@@ -773,7 +816,9 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
             matched = self._apply_client_filters(rows, client_filters)
             if matched:
-                matched_ids = ", ".join(f"'{r['node_id']}'" for r in matched)
+                matched_ids = ", ".join(
+                    f"'{self._escape(r['node_id'])}'" for r in matched
+                )
                 self._client.delete(
                     self._collection_name,
                     expr=f"node_id IN ({matched_ids})",
@@ -792,13 +837,15 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         if not node_ids and filters is None:
             return
 
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
         expr_parts: List[str] = []
         client_filters = None
 
         if node_ids:
-            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            ids_str = ", ".join(f"'{self._escape(nid)}'" for nid in node_ids)
             expr_parts.append(f"node_id IN ({ids_str})")
 
         if filters is not None:
@@ -811,19 +858,19 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         expr = " AND ".join(expr_parts)
 
-        async with AsyncCollection(self._collection_name) as col:
-            if client_filters:
-                rows = await col.query(
-                    expr=expr, output_fields=["node_id", "metadata_"]
+        col = AsyncCollection(self._collection_name)
+        if client_filters:
+            rows = await col.query(
+                expr=expr, output_fields=["node_id", "metadata_"]
+            )
+            matched = self._apply_client_filters(rows, client_filters)
+            if matched:
+                matched_ids = ", ".join(
+                    f"'{self._escape(r['node_id'])}'" for r in matched
                 )
-                matched = self._apply_client_filters(rows, client_filters)
-                if matched:
-                    matched_ids = ", ".join(
-                        f"'{r['node_id']}'" for r in matched
-                    )
-                    await col.delete(expr=f"node_id IN ({matched_ids})")
-            else:
-                await col.delete(expr=expr)
+                await col.delete(expr=f"node_id IN ({matched_ids})")
+        else:
+            await col.delete(expr=expr)
 
     # ------------------------------------------------------------------
     # CRUD — get_nodes
@@ -843,7 +890,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         client_filters = None
 
         if node_ids:
-            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            ids_str = ", ".join(f"'{self._escape(nid)}'" for nid in node_ids)
             expr_parts.append(f"node_id IN ({ids_str})")
 
         if filters is not None:
@@ -875,13 +922,15 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         if not node_ids and filters is None:
             return []
 
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
         expr_parts: List[str] = []
         client_filters = None
 
         if node_ids:
-            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            ids_str = ", ".join(f"'{self._escape(nid)}'" for nid in node_ids)
             expr_parts.append(f"node_id IN ({ids_str})")
 
         if filters is not None:
@@ -891,11 +940,11 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         expr = " AND ".join(expr_parts) if expr_parts else None
 
-        async with AsyncCollection(self._collection_name) as col:
-            rows = await col.query(
-                expr=expr,
-                output_fields=["node_id", "text", "metadata_", "embedding"],
-            )
+        col = AsyncCollection(self._collection_name)
+        rows = await col.query(
+            expr=expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+        )
 
         if client_filters:
             rows = self._apply_client_filters(rows, client_filters)
@@ -914,10 +963,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     async def aclear(self) -> None:
         """Async version of ``clear()``."""
         self._initialize()
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
-        async with AsyncCollection(self._collection_name) as col:
-            await col.truncate()
+        col = AsyncCollection(self._collection_name)
+        await col.truncate()
 
     # ------------------------------------------------------------------
     # Query — DEFAULT mode (basic vector search for Wave 1)
@@ -974,7 +1025,6 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         # Build row dicts from search results
         rows: List[Dict[str, Any]] = []
-        distances: List[float] = []
 
         hits = results[0] if results else []
         for hit in hits:
@@ -983,35 +1033,41 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 row = dict(hit.data)
             elif isinstance(hit, dict):
                 row = dict(hit)
+            elif hasattr(hit, "data") and hit.data is not None:
+                # hit.data is an object (not dict) — extract fields via vars()
+                try:
+                    row = {k: v for k, v in vars(hit.data).items()
+                           if not k.startswith("_")}
+                except (TypeError, AttributeError):
+                    pass
 
             # Ensure node_id is set
             if "node_id" not in row:
                 row["node_id"] = str(getattr(hit, "id", ""))
 
-            # Get distance
+            # Attach distance to the row BEFORE filtering so scores stay aligned
             dist = getattr(hit, "distance", None)
             if dist is not None:
-                distances.append(float(dist))
+                row["_distance"] = float(dist)
 
             rows.append(row)
 
-        # Apply client-side filters
+        # Apply client-side filters (distance travels with the row)
         if client_filters:
             rows = self._apply_client_filters(rows, client_filters)
-            # Adjust distances to match filtered rows
-            # (approximate — exact distance mapping is lost after filtering)
 
         # Convert to nodes
         nodes: List[BaseNode] = []
         ids: List[str] = []
         similarities: List[float] = []
 
-        for i, row in enumerate(rows):
+        for row in rows:
             node = self._row_dict_to_node(row)
             nodes.append(node)
             ids.append(row.get("node_id", ""))
-            if i < len(distances):
-                similarities.append(1.0 - distances[i])
+            dist = row.pop("_distance", None)
+            if dist is not None:
+                similarities.append(1.0 - dist)
 
         return VectorStoreQueryResult(
             nodes=nodes,
@@ -1041,6 +1097,8 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 f"Wave 2: async query mode {mode} not yet implemented"
             )
 
+        await self._ensure_async_connection()
+
         from pyvastbase import AsyncCollection
 
         if query.query_embedding is None:
@@ -1052,18 +1110,17 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
-        async with AsyncCollection(self._collection_name) as col:
-            results = await col.search(
-                data=[query.query_embedding],
-                anns_field="embedding",
-                param={"metric_type": "cosine", "ef": int(ef_search)},
-                limit=query.similarity_top_k,
-                expr=db_expr,
-                output_fields=["node_id", "text", "metadata_", "embedding"],
-            )
+        col = AsyncCollection(self._collection_name)
+        results = await col.search(
+            data=[query.query_embedding],
+            anns_field="embedding",
+            param={"metric_type": "cosine", "ef": int(ef_search)},
+            limit=query.similarity_top_k,
+            expr=db_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+        )
 
         rows: List[Dict[str, Any]] = []
-        distances: List[float] = []
 
         hits = results[0] if results else []
         for hit in hits:
@@ -1072,13 +1129,22 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 row = dict(hit.data)
             elif isinstance(hit, dict):
                 row = dict(hit)
+            elif hasattr(hit, "data") and hit.data is not None:
+                # hit.data is an object (not dict) — extract fields via vars()
+                try:
+                    row = {k: v for k, v in vars(hit.data).items()
+                           if not k.startswith("_")}
+                except (TypeError, AttributeError):
+                    pass
             if "node_id" not in row:
                 row["node_id"] = str(getattr(hit, "id", ""))
+            # Attach distance to the row BEFORE filtering so scores stay aligned
             dist = getattr(hit, "distance", None)
             if dist is not None:
-                distances.append(float(dist))
+                row["_distance"] = float(dist)
             rows.append(row)
 
+        # Apply client-side filters (distance travels with the row)
         if client_filters:
             rows = self._apply_client_filters(rows, client_filters)
 
@@ -1086,12 +1152,13 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         ids: List[str] = []
         similarities: List[float] = []
 
-        for i, row in enumerate(rows):
+        for row in rows:
             node = self._row_dict_to_node(row)
             nodes.append(node)
             ids.append(row.get("node_id", ""))
-            if i < len(distances):
-                similarities.append(1.0 - distances[i])
+            dist = row.pop("_distance", None)
+            if dist is not None:
+                similarities.append(1.0 - dist)
 
         return VectorStoreQueryResult(
             nodes=nodes,
