@@ -252,6 +252,55 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         self._is_initialized = True  # Only reached on the success path
 
+    @staticmethod
+    def _patch_async_executor() -> None:
+        """Patch pyvastbase AsyncExecutor.execute for named-placeholder compat.
+
+        pyvastbase 0.2.7's ``AsyncCollection._load_schema_async()`` passes
+        ``[self._name]`` (a list) to the executor, but the SQL uses
+        ``%(table_name)s`` named placeholders.  psycopg 3 requires a dict
+        for named placeholders, causing ``TypeError: named placeholders
+        require a mapping of parameters``.
+
+        The sync ``CollectionCore.load_schema()`` correctly passes
+        ``{"table_name": self._name}`` (a dict).  This patch makes the
+        async path behave consistently by converting list params to dict
+        params when the SQL contains named placeholders.
+
+        Idempotent — only patches once per process.
+        """
+        from pyvastbase.executor.async_impl import AsyncExecutor
+
+        if getattr(AsyncExecutor, "_adapter_patched", False):
+            return
+
+        _original_execute = AsyncExecutor.execute
+
+        async def _patched_execute(
+            self: Any, sql: str, params: Any
+        ) -> list:
+            if isinstance(params, list) and params and "%(" in sql:
+                import re as _re
+
+                # Extract placeholder names in order of appearance.
+                # Named placeholders can repeat (e.g. %(table_name)s
+                # appearing twice); psycopg expects a dict keyed by
+                # unique name, so we map each *unique* name to one
+                # positional value from the list.
+                all_names = _re.findall(r"%\((\w+)\)s", sql)
+                seen: set = set()
+                unique_names: list = []
+                for n in all_names:
+                    if n not in seen:
+                        seen.add(n)
+                        unique_names.append(n)
+                if unique_names and len(unique_names) == len(params):
+                    params = dict(zip(unique_names, params))
+            return await _original_execute(self, sql, params)
+
+        AsyncExecutor.execute = _patched_execute  # type: ignore[assignment]
+        AsyncExecutor._adapter_patched = True  # type: ignore[attr-defined]
+
     async def _ensure_async_connection(self) -> None:
         """Ensure the async connection pool is established for AsyncCollection.
 
@@ -274,6 +323,8 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 user=self.user,
                 password=self.password,
             )
+            # Apply monkey-patch for pyvastbase 0.2.7 async executor bug
+            self._patch_async_executor()
             self._async_initialized = True
         except Exception as e:
             if self.initialization_fail_on_error:
@@ -1238,14 +1289,31 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
+        # Build search params dict and invoke customize_search_fn if set
+        search_params: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "data": [query.query_embedding],
+            "anns_field": "embedding",
+            "param": {"metric_type": "cosine", "ef": int(ef_search)},
+            "limit": query.similarity_top_k,
+            "expr": db_expr,
+            "output_fields": ["node_id", "text", "metadata_", "embedding"],
+        }
+
+        if self._customize_search_fn is not None:
+            try:
+                search_params = self._customize_search_fn(search_params, **kwargs)
+            except Exception as e:
+                _logger.warning("customize_search_fn raised an error: %s", e)
+
         results = self._client.search(
-            self._collection_name,
-            data=[query.query_embedding],
-            anns_field="embedding",
-            param={"metric_type": "cosine", "ef": int(ef_search)},
-            limit=query.similarity_top_k,
-            expr=db_expr,
-            output_fields=["node_id", "text", "metadata_", "embedding"],
+            search_params["collection_name"],
+            data=search_params["data"],
+            anns_field=search_params["anns_field"],
+            param=search_params["param"],
+            limit=search_params["limit"],
+            expr=search_params.get("expr"),
+            output_fields=search_params["output_fields"],
         )
 
         hits = results[0] if results else []
