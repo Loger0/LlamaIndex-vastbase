@@ -184,11 +184,13 @@ def test_hybrid_search_e2e():
     )
 
     try:
-        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-
         # Clear stale data from previous runs
         try:
             store.clear()
+        except Exception:
+            pass
+
+        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
         except Exception:
             pass
 
@@ -237,6 +239,10 @@ def test_hybrid_search_e2e():
         assert "fox2" in node_ids
 
     finally:
+        try:
+            store.clear()
+        except Exception:
+            pass
         store.close()
 
 
@@ -292,6 +298,10 @@ def test_index_node_roundtrip():
         assert isinstance(res.nodes[1], TextNode)
 
     finally:
+        try:
+            store.clear()
+        except Exception:
+            pass
         store.close()
 
 
@@ -322,11 +332,13 @@ def test_customize_search_fn_integration():
     )
 
     try:
-        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-
         # Clear stale data from previous runs
         try:
             store.clear()
+        except Exception:
+            pass
+
+        from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
         except Exception:
             pass
 
@@ -350,6 +362,10 @@ def test_customize_search_fn_integration():
         assert "limit" in call_log[0] or "expr" in call_log[0]
 
     finally:
+        try:
+            store.clear()
+        except Exception:
+            pass
         store.close()
 
 
