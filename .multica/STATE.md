@@ -1,6 +1,6 @@
 # Multica Workflow State — LlamaIndex ChatStore Vastbase Adaptation
 
-> Last updated: 2026-06-17
+> Last updated: 2026-06-18
 
 ## Overall
 
@@ -14,7 +14,7 @@
 |-------|--------|-------|
 | eco-issue-analyst | ✅ 完成 | Framework diagnosis, Spec, Plan, Decisions written |
 | code-reviewer | ✅ 完成 | Plan-Check Round 4 passed |
-| convention-extractor | ⏭️ 跳过 | Standalone mode, no conventions needed |
+| convention-extractor | ✅ 完成 | Conventions extracted to .multica/conventions/llamaindex-chat-store-postgres-conventions.yaml |
 | **test-scout** | **✅ 完成** | 56 tests written, RED phase confirmed |
 | **eco-issue-splitter** | **✅ 完成** | 4 sub-issues created (TES-10~13), split-plan.yaml written |
 | adapter-dev | ⏳ 待执行 | Implement VastbaseChatStore (14 methods) |

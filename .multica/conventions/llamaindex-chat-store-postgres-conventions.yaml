@@ -1,0 +1,214 @@
+# Convention Spec — llama-index-storage-chat-store-postgres v0.4.0
+# Extracted from upstream reference implementation by convention-extractor (v7)
+# Source: https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres
+
+meta:
+  framework: "llama-index-storage-chat-store-postgres"
+  component: "chat_store"
+  upstream_ref: "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/storage/chat_store/llama-index-storage-chat-store-postgres"
+  extracted_at: "2026-06-18T04:30:00Z"
+  extractor_version: "2.0"
+
+project_structure:
+  package_naming: "llama-index-storage-<component>-<backend>"  # hyphenated, e.g. llama-index-storage-chat-store-postgres
+  module_layout:
+    - path: "llama_index/storage/chat_store/postgres/"
+      files:
+        - "__init__.py"       # Single-line export: from .base import ClassName; __all__ = ["ClassName"]
+        - "base.py"           # All implementation in one file (~480 lines)
+  file_naming: "snake_case"                                    # base.py, __init__.py, test_*.py
+  pyproject_requires:
+    python: ">=3.10,<4.0"
+    core_dependency_pattern: "llama-index-core>=0.13.0,<0.15"
+    build_system: "hatchling"
+  tool_config:
+    mypy: "disallow_untyped_defs=true, ignore_missing_imports=true"
+    codespell: "check-filenames=true, check-hidden=true"
+    ruff: "0.11.11"
+
+code_style:
+  imports:
+    order: ["stdlib", "third_party", "framework", "local"]
+    grouping: "one_blank_line_between_groups"
+    detail: |
+      Group 1 — stdlib: typing, urllib, json, logging, time, asyncio
+      Group 2 — third_party: sqlalchemy, docker (tests only)
+      Group 3 — framework: llama_index.core.* (bridge.pydantic, llms, storage.chat_store.base)
+      Group 4 — local: same-package relative imports
+      No relative imports observed; all imports use absolute paths from llama_index.*
+  naming:
+    class: "CamelCase"                           # PostgresChatStore, BaseChatStore, AbstractData
+    method: "snake_case"                          # set_messages, get_messages, add_message
+    private_method: "_snake_case"                 # _connect, _initialize, _create_schema_if_not_exists, _check_legacy_table_exists, _ensure_initialized
+    private_attr: "_snake_case"                   # _table_class, _session, _async_session, _coll, _async_coll, _initialized, _actual_table_name, _id_counter
+    constant: "not_observed_in_upstream"          # UNCERTAIN: no module-level constants found in upstream source
+    function: "snake_case"                        # get_data_model, params_from_uri (standalone functions)
+    parameter: "snake_case"                       # table_name, schema_name, use_jsonb, connection_string
+  type_annotations:
+    style: "from_typing_import"                   # from typing import Any, Optional, List, Dict, Generator, Union
+    future_annotations: false                     # Does NOT use `from __future__ import annotations`
+    return_style: "explicit_optional"             # Optional[List[ChatMessage]], Optional[ChatMessage]
+    dict_type: "Dict[str, Any]"                   # Also: Dict[str, Union[str, Container]]
+    list_type: "list[ChatMessage]"                # Modern generic alias used in method signatures (Python 3.10+)
+    class_reference: 'Optional[object]'           # Forward reference to pyvastbase types via object placeholder
+    field_annotation: "Field(default=..., description=...)"  # Pydantic Field with default + description
+    private_attr_annotation: "PrivateAttr(default=...)"      # Pydantic PrivateAttr for runtime-only attributes
+  docstring:
+    style: "google"                               # Args:, Returns:, Raises: sections
+    sections: ["Args", "Returns"]
+    format: |
+      Triple-double-quote on single line for brief docstrings.
+      Multi-line with blank line after opening quote for detailed docstrings.
+      Section headers (Args/Returns/Raises) followed by blank line.
+      Parameter format: "param_name: Description." (colon after name, period at end)
+      Return format: "ReturnType: Description."
+      Class docstring describes purpose, connection methods, and schema.
+      Method docstrings describe purpose, then Args, then Returns.
+    class_docstring_sections: ["Description", "Connection methods", "Schema"]
+  comments:
+    inline: "# Description of step"               # Used for block explanation (e.g. "# 1. Establish connection")
+    section_header: "# === Section Name ==="       # ASCII art dividers between major sections
+    subsection: "# Subsection Name"                # Hash headers without ASCII art
+    inline_note: "# noqa: F401"                    # Linter suppression comments
+
+api_patterns:
+  factory_methods:
+    - name: "from_params"
+      pattern: |
+        @classmethod returning cls instance.
+        Accepts individual connection parameters with Optional defaults.
+        Constructs connection string internally, calls cls(...) + _initialize().
+        Key params: host, port, database, user, password (all Optional[str/int]).
+        Additional params: table_name (str), schema_name (str), use_jsonb (bool).
+      signature: "def from_params(cls, host: Optional[str] = None, ..., use_jsonb: bool = False) -> \"ClassName\""
+    - name: "from_uri"
+      pattern: |
+        @classmethod returning cls instance.
+        Parses URI string via urllib.parse.urlparse.
+        Delegates to from_params with extracted parameters.
+        URI format: scheme://user:pass@host:port/database
+      signature: "def from_uri(cls, uri: str, table_name: str = \"...\", ...) -> \"ClassName\""
+  error_handling:
+    pattern: "silent_none_or_empty"
+    custom_exceptions: false                     # No custom exception classes in upstream
+    description: |
+      CRUD methods return None on missing key / out-of-bounds index / empty result.
+      Infrastructure exceptions (connection failure, invalid SQL) propagate upward — no try/except wrapping.
+      get_messages for missing key returns [] (empty list), not None.
+      delete_messages returns None unconditionally (returns deleted messages as Optional).
+      delete_message / delete_last_message return Optional[ChatMessage] — None on missing.
+    json_decode_handling: |
+      VastbaseChatStore adds defensive json.JSONDecodeError handling in get_messages
+      (returns []) — upstream PostgresChatStore relies on SQLAlchemy type coercion.
+  connection_management:
+    pattern: "lazy_connect_via_initialize"
+    description: |
+      Upstream: SQLAlchemy create_engine + create_async_engine + sessionmaker (eager connect).
+      VastbaseChatStore: pyvastbase connect() + lazy init via _ensure_initialized().
+      Sync: pyvastbase Collection (auto-uses global connection pool).
+      Async: pyvastbase AsyncCollection + AsyncConnections.connect() with named aliases.
+      Context manager pattern: `with self._session() as session, session.begin():`
+    session_lifecycle: |
+      Upstream uses `with self._session() as session, session.begin()` — dual context manager.
+      VastbaseChatStore uses pyvastbase Collection direct API (no context manager needed).
+    dual_connection: |
+      Upstream maintains separate sync (create_engine) and async (create_async_engine) sessions.
+      VastbaseChatStore maintains self._coll (sync Collection) and self._async_coll (AsyncCollection).
+  async_strategy:
+    pattern: "native_async_override"
+    description: |
+      Base class (BaseChatStore) provides asyncio.to_thread() default implementations.
+      Upstream PostgresChatStore overrides ALL 7 async methods with native async (asyncpg).
+      VastbaseChatStore overrides ALL 7 async methods with native pyvastbase AsyncCollection.
+      No use of asyncio.to_thread() in either implementation — all 14 methods explicitly written.
+    async_naming: "a + method_name"              # aset_messages, aget_messages, async_add_message (note: async_ prefix for add)
+    async_naming_inconsistency: |
+      UNCERTAIN: Most async methods use "a" prefix (aset_messages, aget_messages, adelete_messages,
+      adelete_message, adelete_last_message, aget_keys), but add_message uses "async_add_message"
+      instead of "aadd_message". This is inherited from LlamaIndex base class naming.
+  constructor_pattern:
+    pattern: "**data passthrough"
+    description: |
+      __init__ accepts **data and passes to super().__init__(**data).
+      Pydantic model fields are declared at class level with type annotations.
+      PrivateAttr fields initialized in __init__ after super().__init__().
+      No explicit positional arguments — all fields are keyword via Pydantic.
+
+serialization:
+  chat_message_roundtrip: |
+    Write: message.model_dump(mode="json") → json.dumps([...]) → TEXT column
+    Read: json.loads(value) → [ChatMessage.model_validate(m) for m in parsed]
+    Upstream: message.model_dump_json() for write, ChatMessage.model_validate(json_obj) for read
+    Vastbase variant: model_dump(mode="json") + json.dumps for write (pyvastbase TEXT field),
+    json.loads + model_validate for read. This is equivalent — model_dump_json() = json.dumps(model_dump(mode="json"))
+  json_handling: |
+    Upstream: relies on SQLAlchemy ARRAY(JSON) type coercion — model_dump_json() stored as JSON string in array,
+    SQLAlchemy auto-deserializes JSON strings back to Python objects on read.
+    VastbaseChatStore: manual json.dumps for write, json.loads for read (TEXT column, no ARRAY type).
+  column_types:
+    primary_key: "INT64 (auto_id=True)"           # Upstream: Integer, primary_key=True, autoincrement=True
+    key_column: "VARCHAR(512)"                     # Upstream: VARCHAR, nullable=False
+    value_column: "TEXT"                           # Upstream: ARRAY(JSON) or ARRAY(JSONB)
+    jsonb_support: |
+      Upstream uses use_jsonb toggle: JSONB if True, JSON else.
+      Vastbase same behavior — use_jsonb parameter kept for API compat but has no behavioral difference
+      (Vastbase TEXT column stores JSON string regardless).
+  orm_vs_raw:
+    upstream: "SQLAlchemy ORM with dynamic model generation (declarative_base() + type())"
+    vastbase: "pyvastbase Collection API (no raw SQL, no ORM)"
+    mixed_approach: |
+      Upstream mixes ORM queries (select().filter_by()) with raw SQL via text().
+      ORM used for SELECT (get_messages, delete_message pre-read, delete_last_message pre-read, get_keys).
+      Raw SQL via text() used for INSERT ON CONFLICT (set_messages, add_message) and UPDATE with array slicing.
+  data_migration:
+    legacy_table_detection: |
+      Upstream: _check_legacy_table_exists() via SQLAlchemy inspect.get_table_names().
+      Checks for "data_{table_name}" prefix to maintain backward compatibility.
+      VastbaseChatStore: uses pyvastbase has_collection("data_{table_name}") for same purpose.
+
+test_conventions:
+  framework: "pytest"
+  fixture_pattern: "session_scoped"              # Docker PostgreSQL container starts once per test session
+  mock_strategy: "real_db_with_docker_container"  # No mocks; real PostgreSQL via Docker
+  naming:
+    file: "test_chat_store_postgres_chat_store.py"  # test_<module_name>.py
+    function: "test_<descriptive_snake_case>"       # test_postgres_add_message, test_set_and_retrieve_messages
+    class: "not_used"                                # Top-level test functions, no TestClass wrapper
+  async_testing:
+    decorator: "@pytest.mark.asyncio"
+    framework: "pytest-asyncio (0.21.0)"
+  skip_conditions:
+    pattern: "@pytest.mark.skipif(condition, reason=\"...\")"
+    typical_condition: "missing_packages_import_check (try/except ImportError)"
+  fixtures:
+    - name: "postgres_container"
+      scope: "session"
+      type: "Generator[yield_dict, None, None]"
+      description: "Docker PostgreSQL container, yields connection info dict, auto-cleanup in finally"
+    - name: "postgres_chat_store"
+      scope: "function"
+      type: "Generator[ChatStore, None, None]"
+      description: "Creates store via from_uri(), yields, cleanup: delete all keys in finally"
+  coverage_target: null                              # UNCERTAIN: no coverage config found in pyproject.toml
+  linting:
+    tools: ["ruff", "mypy", "codespell", "black"]
+    ci_pipeline: "pre-commit hooks"
+
+_confidence:
+  project_structure: "observed"      # Directly observed from upstream repo layout and pyproject.toml
+  code_style: "observed"             # Directly observed from base.py, __init__.py, and base class
+  api_patterns: "observed"           # Directly observed from PostgresChatStore implementation (all 14 methods)
+  serialization: "observed"          # Directly observed from model_dump_json/model_validate calls
+  test_conventions: "observed"       # Directly observed from test file and conftest.py
+
+# Cross-validation notes:
+# - VastbaseChatStore (base.py, 715 lines) follows ALL upstream conventions:
+#   import order, naming, type annotations, docstring format, factory methods,
+#   async strategy, error handling pattern, serialization roundtrip.
+# - Departures from upstream are by design (decisions D-01 through D-06):
+#   pyvastbase replaces SQLAlchemy, TEXT column replaces ARRAY(JSON),
+#   Python-layer array ops replace PG array functions,
+#   vastbase:// URI replaces postgresql+psycopg://.
+# - Two additional conventions introduced by VastbaseChatStore:
+#   1. Section headers with ASCII art dividers (# === Section Name ===)
+#   2. Lazy initialization pattern (_ensure_initialized / _ensure_async_initialized)
