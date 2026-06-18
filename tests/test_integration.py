@@ -64,6 +64,12 @@ def test_full_crud_lifecycle():
         # 1. Add nodes
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
+
         nodes = [
             TextNode(
                 text="document one about machine learning",
@@ -180,6 +186,12 @@ def test_hybrid_search_e2e():
     try:
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
+
         nodes = [
             TextNode(
                 text="The quick brown fox jumps over the lazy dog",
@@ -248,6 +260,11 @@ def test_index_node_roundtrip():
     )
 
     try:
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
         nodes = [
             TextNode(
                 text="original document",
@@ -307,6 +324,12 @@ def test_customize_search_fn_integration():
     try:
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
+
         node = TextNode(
             text="test",
             id_="test1",
@@ -364,6 +387,16 @@ def test_multiple_stores_isolation():
 
     try:
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
+
+        # Clear stale data from previous runs
+        try:
+            store_a.clear()
+        except Exception:
+            pass
+        try:
+            store_b.clear()
+        except Exception:
+            pass
 
         node_a = TextNode(
             text="data in store A",

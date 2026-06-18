@@ -3,7 +3,6 @@
 All database operations use pyvastbase — no SQLAlchemy, no psycopg2, no raw SQL.
 """
 
-import asyncio
 from typing import Any, Dict, Generator, List, Optional, Union
 
 import pytest
@@ -80,13 +79,18 @@ def vb() -> Generator[VastbaseVectorStore, None, None]:
         schema_name=TEST_SCHEMA_NAME,
         embed_dim=TEST_EMBED_DIM,
     )
+    # Clear stale data from previous runs to prevent data-residue failures
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -113,13 +117,17 @@ def vb_hybrid() -> Generator[VastbaseVectorStore, None, None]:
         hybrid_search=True,
         embed_dim=TEST_EMBED_DIM,
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -147,13 +155,17 @@ def vb_indexed_metadata() -> Generator[VastbaseVectorStore, None, None]:
         embed_dim=TEST_EMBED_DIM,
         indexed_metadata_keys={("test_text", "text"), ("test_int", "int")},
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -180,13 +192,17 @@ def vb_hnsw() -> Generator[VastbaseVectorStore, None, None]:
         embed_dim=TEST_EMBED_DIM,
         hnsw_kwargs={"hnsw_m": 16, "hnsw_ef_construction": 64, "hnsw_ef_search": 40},
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -214,13 +230,17 @@ def vb_hnsw_hybrid() -> Generator[VastbaseVectorStore, None, None]:
         hybrid_search=True,
         hnsw_kwargs={"hnsw_m": 16, "hnsw_ef_construction": 64, "hnsw_ef_search": 40},
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -247,13 +267,17 @@ def vb_halfvec() -> Generator[VastbaseVectorStore, None, None]:
         embed_dim=TEST_EMBED_DIM,
         use_halfvec=True,
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -276,13 +300,17 @@ def vb_halfvec_hybrid() -> Generator[VastbaseVectorStore, None, None]:
         hybrid_search=True,
         use_halfvec=True,
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -314,13 +342,17 @@ def vb_gin_array_indexed() -> Generator[VastbaseVectorStore, None, None]:
             ("user_id", "text"),
         },
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
@@ -353,13 +385,17 @@ def vb_custom_search_fn() -> Generator[VastbaseVectorStore, None, None]:
         embed_dim=TEST_EMBED_DIM,
         customize_search_fn=add_custom_expr,
     )
+    try:
+        store.clear()
+    except Exception:
+        pass
     yield store
     try:
         store.clear()
     except Exception:
         pass
     try:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
     except Exception:
         pass
 
