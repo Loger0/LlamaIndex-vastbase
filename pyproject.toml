@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-index-vector-stores-vastbase"
+version = "0.1.0"
+description = "Vastbase vector store integration for LlamaIndex"
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+license = {text = "MIT"}
+dependencies = [
+    "llama-index-core>=0.13.0,<0.15",
+    "pyvastbase>=0.2.7",
+]
+
+[tool.setuptools.packages.find]
+include = ["llama_index*"]
