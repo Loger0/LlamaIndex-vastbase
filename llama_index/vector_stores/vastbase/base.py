@@ -270,6 +270,9 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         try:
             if self._client.has_collection(self._collection_name):
+                # Collection exists — still ensure the auto-id sequence
+                # (pyvastbase never generates SERIAL/IDENTITY DDL).
+                self._ensure_auto_id_sequence()
                 return
         except Exception as e:
             # pyvastbase 0.2.7 has_collection has known edge cases;
@@ -281,7 +284,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         )
 
         fields = [
-            FieldSchema(name="id", dtype=DataType.INT64, is_primary_key=True),
+            FieldSchema(name="id", dtype=DataType.INT64, is_primary_key=True, auto_id=True),
             FieldSchema(name="node_id", dtype=DataType.VARCHAR, max_length=256),
             FieldSchema(
                 name="ref_doc_id", dtype=DataType.VARCHAR, max_length=256
@@ -301,8 +304,10 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
 
         schema = CollectionSchema(name=self._collection_name, fields=fields)
+        created = False
         try:
             self._client.create_collection(self._collection_name, schema=schema)
+            created = True
         except Exception as e:
             err_lower = str(e).lower()
             if "already exist" not in err_lower and "duplicate" not in err_lower:
@@ -322,6 +327,88 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             _logger.debug(
                 "Collection '%s' already exists; schema patched",
                 self._collection_name,
+            )
+
+        # pyvastbase FieldSchema(auto_id=True) excludes "id" from INSERT but
+        # does NOT generate auto-increment DDL (no SERIAL / IDENTITY / DEFAULT).
+        # We must add a sequence-backed DEFAULT so the database fills the
+        # primary key automatically.
+        self._ensure_auto_id_sequence()
+
+    def _ensure_auto_id_sequence(self) -> None:
+        """Ensure the ``id`` column has a sequence-backed DEFAULT.
+
+        pyvastbase ``FieldSchema(auto_id=True)`` correctly omits the ``id``
+        column from INSERT statements, but does not generate ``SERIAL`` /
+        ``GENERATED … AS IDENTITY`` DDL.  Without a DEFAULT, every INSERT
+        fails with ``NotNullViolation``.
+
+        This method creates a dedicated sequence and wires it as the column
+        DEFAULT via raw SQL — idempotent across repeated calls.
+
+        Uses a dedicated psycopg connection (not pyvastbase's pooled one)
+        to avoid transaction management conflicts.
+        """
+        assert self._client is not None
+
+        seq_name = f"{self._collection_name}_id_seq"
+
+        try:
+            import psycopg
+
+            conn = psycopg.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.database,
+                user=self.user,
+                password=self.password,
+                autocommit=True,
+            )
+            try:
+                with conn.cursor() as cur:
+                    # Create sequence if it doesn't exist
+                    cur.execute(
+                        "SELECT 1 FROM information_schema.sequences "
+                        "WHERE sequence_name = %s",
+                        (seq_name,),
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute(
+                            f'CREATE SEQUENCE IF NOT EXISTS "{seq_name}" '
+                            f"START WITH 1 INCREMENT BY 1"
+                        )
+                        _logger.debug(
+                            "Created sequence '%s'", seq_name,
+                        )
+
+                    # ALWAYS ensure the column DEFAULT is set — the ALTER
+                    # is idempotent and covers the case where the sequence
+                    # exists but the default was never applied.
+                    cur.execute(
+                        "SELECT column_default "
+                        "FROM information_schema.columns "
+                        "WHERE table_name = %s AND column_name = 'id'",
+                        (self._collection_name,),
+                    )
+                    row = cur.fetchone()
+                    if row is None or row[0] is None or seq_name not in str(row[0]):
+                        cur.execute(
+                            f'ALTER TABLE "{self._collection_name}" '
+                            f"ALTER COLUMN id "
+                            f"SET DEFAULT nextval('{seq_name}')"
+                        )
+                        _logger.debug(
+                            "Set DEFAULT nextval('%s') on '%s'.id",
+                            seq_name,
+                            self._collection_name,
+                        )
+            finally:
+                conn.close()
+        except Exception as e:
+            _logger.warning(
+                "Failed to create auto-id sequence for '%s': %s",
+                self._collection_name,
+                e,
             )
 
     def _create_hnsw_index(self) -> None:
