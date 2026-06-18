@@ -41,39 +41,26 @@ _logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class _ImmediateAwaitable:
-    """An awaitable whose side-effects run immediately on construction.
+async def _noop_coroutine() -> None:
+    """A no-op coroutine used as the return value of ``close()``.
 
-    Used by ``close()`` so that both sync and async callers work:
+    ``close()`` runs all cleanup synchronously before returning this
+    coroutine.  Returning a real coroutine object (from ``async def``)
+    ensures compatibility with ``asyncio.run()``, which calls
+    ``inspect.iscoroutine()`` — a check that custom ``__await__``-based
+    awaitables like the former ``_ImmediateAwaitable`` do not pass on
+    Python 3.13+.
 
-    - Sync: ``store.close()`` → cleanup runs immediately in ``__init__``;
-      the returned ``_ImmediateAwaitable`` is discarded.
-    - Async: ``await store.close()`` → cleanup already ran in ``__init__``;
-      ``await`` returns immediately via a completed Future.
-    - ``asyncio.get_event_loop().run_until_complete(store.close())`` →
-      same as the async path.
+    Calling patterns supported:
+
+    - Sync: ``store.close()`` → cleanup runs immediately; the returned
+      coroutine is discarded (never awaited).
+    - Async: ``await store.close()`` → cleanup already ran; the no-op
+      coroutine returns immediately.
+    - ``asyncio.run(store.close())`` → works because the return value
+      passes ``inspect.iscoroutine()``.
     """
-
-    __slots__ = ()
-
-    def __await__(self):  # type: ignore[no-untyped-def]
-        # Create a completed Future on whatever loop is available.
-        # Gracefully handle the case where no event loop exists
-        # (Python 3.13 deprecated get_event_loop without a running loop).
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        if loop is None:
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-        f: asyncio.Future = loop.create_future()
-        f.set_result(None)
-        return f.__await__()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +252,55 @@ class VastbaseVectorStore(BasePydanticVectorStore):
 
         self._is_initialized = True  # Only reached on the success path
 
+    @staticmethod
+    def _patch_async_executor() -> None:
+        """Patch pyvastbase AsyncExecutor.execute for named-placeholder compat.
+
+        pyvastbase 0.2.7's ``AsyncCollection._load_schema_async()`` passes
+        ``[self._name]`` (a list) to the executor, but the SQL uses
+        ``%(table_name)s`` named placeholders.  psycopg 3 requires a dict
+        for named placeholders, causing ``TypeError: named placeholders
+        require a mapping of parameters``.
+
+        The sync ``CollectionCore.load_schema()`` correctly passes
+        ``{"table_name": self._name}`` (a dict).  This patch makes the
+        async path behave consistently by converting list params to dict
+        params when the SQL contains named placeholders.
+
+        Idempotent — only patches once per process.
+        """
+        from pyvastbase.executor.async_impl import AsyncExecutor
+
+        if getattr(AsyncExecutor, "_adapter_patched", False):
+            return
+
+        _original_execute = AsyncExecutor.execute
+
+        async def _patched_execute(
+            self: Any, sql: str, params: Any
+        ) -> list:
+            if isinstance(params, list) and params and "%(" in sql:
+                import re as _re
+
+                # Extract placeholder names in order of appearance.
+                # Named placeholders can repeat (e.g. %(table_name)s
+                # appearing twice); psycopg expects a dict keyed by
+                # unique name, so we map each *unique* name to one
+                # positional value from the list.
+                all_names = _re.findall(r"%\((\w+)\)s", sql)
+                seen: set = set()
+                unique_names: list = []
+                for n in all_names:
+                    if n not in seen:
+                        seen.add(n)
+                        unique_names.append(n)
+                if unique_names and len(unique_names) == len(params):
+                    params = dict(zip(unique_names, params))
+            return await _original_execute(self, sql, params)
+
+        AsyncExecutor.execute = _patched_execute  # type: ignore[assignment]
+        AsyncExecutor._adapter_patched = True  # type: ignore[attr-defined]
+
     async def _ensure_async_connection(self) -> None:
         """Ensure the async connection pool is established for AsyncCollection.
 
@@ -287,36 +323,42 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 user=self.user,
                 password=self.password,
             )
+            # Apply monkey-patch for pyvastbase 0.2.7 async executor bug
+            self._patch_async_executor()
             self._async_initialized = True
         except Exception as e:
             if self.initialization_fail_on_error:
                 raise
             _logger.warning("Async connection initialization failed: %s", e)
 
-    def _create_collection_if_not_exists(self) -> None:
-        """Create the Vastbase collection with the required schema.
+    def _psycopg_connect(self) -> "psycopg.Connection":
+        """Open a psycopg connection with autocommit for DDL operations.
 
-        Schema fields:
-        - id         : INT64 primary key (auto-generated)
-        - node_id    : VARCHAR(256) — LlamaIndex node identifier
-        - ref_doc_id : VARCHAR(256) — source document identifier
-        - text       : TEXT — original text content
-        - metadata_  : JSON — node metadata (JSONB-compatible)
-        - embedding  : FLOAT_VECTOR(embed_dim) or FLOAT16_VECTOR(embed_dim)
+        Shared helper used by ``_ensure_schema_columns`` and
+        ``_ensure_auto_id_sequence`` to avoid opening multiple
+        independent connections.
+
+        Returns:
+            An open ``psycopg.Connection`` with ``autocommit=True``.
+            The caller is responsible for closing the connection.
         """
-        assert self._client is not None
+        import psycopg
 
-        try:
-            if self._client.has_collection(self._collection_name):
-                # Collection exists — still ensure the auto-id sequence
-                # (pyvastbase never generates SERIAL/IDENTITY DDL).
-                self._ensure_auto_id_sequence()
-                return
-        except Exception as e:
-            # pyvastbase 0.2.7 has_collection has known edge cases;
-            # fall through to create_collection which handles "already exists".
-            _logger.debug("has_collection check failed (%s); attempting create", e)
+        return psycopg.connect(
+            host=self.host,
+            port=self.port,
+            dbname=self.database,
+            user=self.user,
+            password=self.password,
+            autocommit=True,
+        )
 
+    def _build_schema_fields(self) -> list:
+        """Build the list of FieldSchema for the collection.
+
+        Returns the canonical schema definition so both the create path
+        and the patch path use the same field list.
+        """
         vector_dtype = (
             DataType.FLOAT16_VECTOR if self.use_halfvec else DataType.FLOAT_VECTOR
         )
@@ -334,46 +376,92 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             ),
         ]
 
-        # When hybrid_search is enabled, add a text-search column for
-        # PG-compatible full-text search (to_tsvector / to_tsquery).
         if self.hybrid_search:
             fields.append(
                 FieldSchema(name="text_search_tsv", dtype=DataType.TEXT)
             )
 
+        return fields
+
+    def _create_collection_if_not_exists(self) -> None:
+        """Create the Vastbase collection with the required schema.
+
+        Schema fields:
+        - id         : INT64 primary key (auto-generated)
+        - node_id    : VARCHAR(256) — LlamaIndex node identifier
+        - ref_doc_id : VARCHAR(256) — source document identifier
+        - text       : TEXT — original text content
+        - metadata_  : JSON — node metadata (JSONB-compatible)
+        - embedding  : FLOAT_VECTOR(embed_dim) or FLOAT16_VECTOR(embed_dim)
+
+        When the collection already exists, missing columns are patched
+        via ALTER TABLE … ADD COLUMN after checking existing columns
+        through ``information_schema.columns``.  This handles stale
+        collections created by older adapter versions that lacked
+        columns such as ``ref_doc_id``.
+
+        Note: pyvastbase's ``has_collection`` may fail with an API
+        mismatch, and ``CREATE TABLE IF NOT EXISTS`` is a silent no-op
+        when the table already exists.  Therefore, ``_ensure_schema_columns``
+        is always called after create to handle the pre-existing table case.
+        """
+        assert self._client is not None
+
+        fields = self._build_schema_fields()
+
+        try:
+            if self._client.has_collection(self._collection_name):
+                # Collection exists — patch missing columns and ensure auto-id.
+                conn = self._psycopg_connect()
+                try:
+                    self._ensure_schema_columns(fields, conn=conn)
+                    self._ensure_auto_id_sequence(conn=conn)
+                finally:
+                    conn.close()
+                return
+        except Exception as e:
+            # pyvastbase 0.2.7 has_collection has known edge cases
+            # (e.g. unexpected keyword argument 'using');
+            # fall through to create_collection which handles "already exists".
+            _logger.debug("has_collection check failed (%s); attempting create", e)
+
         schema = CollectionSchema(name=self._collection_name, fields=fields)
-        created = False
         try:
             self._client.create_collection(self._collection_name, schema=schema)
-            created = True
         except Exception as e:
             err_lower = str(e).lower()
             if "already exist" not in err_lower and "duplicate" not in err_lower:
                 raise
-            # Collection already exists — ensure required fields are present.
-            # A stale collection from a previous run may have an older schema
-            # (e.g. missing ref_doc_id).  Use add_collection_field to patch.
-            for field in fields:
-                if field.name == "id":
-                    continue  # skip primary key
-                try:
-                    self._client.add_collection_field(
-                        self._collection_name, field.name, field.dtype
-                    )
-                except Exception:
-                    pass  # field already exists or unsupported — ignore
             _logger.debug(
-                "Collection '%s' already exists; schema patched",
+                "Collection '%s' already exists (create raised)",
                 self._collection_name,
             )
 
-        # pyvastbase FieldSchema(auto_id=True) excludes "id" from INSERT but
-        # does NOT generate auto-increment DDL (no SERIAL / IDENTITY / DEFAULT).
-        # We must add a sequence-backed DEFAULT so the database fills the
-        # primary key automatically.
-        self._ensure_auto_id_sequence()
+        # Always patch schema columns: CREATE TABLE IF NOT EXISTS is a
+        # silent no-op for pre-existing tables with stale schemas, and
+        # the has_collection path above may have been skipped due to the
+        # pyvastbase API bug.  _ensure_schema_columns checks existing
+        # columns via information_schema before issuing ALTER TABLE.
+        #
+        # Use a shared psycopg connection for both schema patching and
+        # auto-id sequence setup to avoid opening two separate connections.
+        try:
+            conn = self._psycopg_connect()
+            try:
+                self._ensure_schema_columns(fields, conn=conn)
+                self._ensure_auto_id_sequence(conn=conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            _logger.warning(
+                "Schema patch for '%s' failed: %s",
+                self._collection_name,
+                e,
+            )
 
-    def _ensure_auto_id_sequence(self) -> None:
+    def _ensure_auto_id_sequence(
+        self, conn: Optional[Any] = None
+    ) -> None:
         """Ensure the ``id`` column has a sequence-backed DEFAULT.
 
         pyvastbase ``FieldSchema(auto_id=True)`` correctly omits the ``id``
@@ -384,70 +472,195 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         This method creates a dedicated sequence and wires it as the column
         DEFAULT via raw SQL — idempotent across repeated calls.
 
-        Uses a dedicated psycopg connection (not pyvastbase's pooled one)
-        to avoid transaction management conflicts.
+        Args:
+            conn: Optional open psycopg connection to reuse.  If ``None``,
+                a new connection is opened via ``_psycopg_connect()`` and
+                closed before returning.
         """
         assert self._client is not None
 
         seq_name = f"{self._collection_name}_id_seq"
 
+        owns_conn = conn is None
         try:
-            import psycopg
+            if owns_conn:
+                conn = self._psycopg_connect()
 
-            conn = psycopg.connect(
-                host=self.host,
-                port=self.port,
-                dbname=self.database,
-                user=self.user,
-                password=self.password,
-                autocommit=True,
-            )
-            try:
-                with conn.cursor() as cur:
-                    # Create sequence if it doesn't exist
+            with conn.cursor() as cur:
+                # Create sequence if it doesn't exist
+                cur.execute(
+                    "SELECT 1 FROM information_schema.sequences "
+                    "WHERE sequence_name = %s AND sequence_schema = %s",
+                    (seq_name, self.schema_name),
+                )
+                if cur.fetchone() is None:
                     cur.execute(
-                        "SELECT 1 FROM information_schema.sequences "
-                        "WHERE sequence_name = %s",
-                        (seq_name,),
+                        f'CREATE SEQUENCE IF NOT EXISTS "{seq_name}" '
+                        f"START WITH 1 INCREMENT BY 1"
                     )
-                    if cur.fetchone() is None:
-                        cur.execute(
-                            f'CREATE SEQUENCE IF NOT EXISTS "{seq_name}" '
-                            f"START WITH 1 INCREMENT BY 1"
-                        )
-                        _logger.debug(
-                            "Created sequence '%s'", seq_name,
-                        )
+                    _logger.debug(
+                        "Created sequence '%s'", seq_name,
+                    )
 
-                    # ALWAYS ensure the column DEFAULT is set — the ALTER
-                    # is idempotent and covers the case where the sequence
-                    # exists but the default was never applied.
+                # ALWAYS ensure the column DEFAULT is set — the ALTER
+                # is idempotent and covers the case where the sequence
+                # exists but the default was never applied.
+                cur.execute(
+                    "SELECT column_default "
+                    "FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = %s "
+                    "AND column_name = 'id'",
+                    (self._collection_name, self.schema_name),
+                )
+                row = cur.fetchone()
+                if row is None or row[0] is None or seq_name not in str(row[0]):
                     cur.execute(
-                        "SELECT column_default "
-                        "FROM information_schema.columns "
-                        "WHERE table_name = %s AND column_name = 'id'",
-                        (self._collection_name,),
+                        f'ALTER TABLE "{self._collection_name}" '
+                        f"ALTER COLUMN id "
+                        f"SET DEFAULT nextval('{seq_name}')"
                     )
-                    row = cur.fetchone()
-                    if row is None or row[0] is None or seq_name not in str(row[0]):
-                        cur.execute(
-                            f'ALTER TABLE "{self._collection_name}" '
-                            f"ALTER COLUMN id "
-                            f"SET DEFAULT nextval('{seq_name}')"
-                        )
-                        _logger.debug(
-                            "Set DEFAULT nextval('%s') on '%s'.id",
-                            seq_name,
-                            self._collection_name,
-                        )
-            finally:
-                conn.close()
+                    _logger.debug(
+                        "Set DEFAULT nextval('%s') on '%s'.id",
+                        seq_name,
+                        self._collection_name,
+                    )
         except Exception as e:
             _logger.warning(
                 "Failed to create auto-id sequence for '%s': %s",
                 self._collection_name,
                 e,
             )
+        finally:
+            if owns_conn and conn is not None:
+                conn.close()
+
+    def _ensure_schema_columns(
+        self, fields: list, conn: Optional[Any] = None
+    ) -> None:
+        """Ensure all required columns exist in the collection table.
+
+        Uses ``ALTER TABLE … ADD COLUMN`` via psycopg, checking existing
+        columns via ``information_schema.columns`` first (Vastbase does
+        not support ``ADD COLUMN IF NOT EXISTS``).  This patches stale
+        collections created by older adapter versions that may be
+        missing columns such as ``ref_doc_id``.
+
+        Unlike pyvastbase's ``add_collection_field`` (which lacks the
+        ``@with_executor`` decorator and fails silently), this method
+        executes raw SQL directly.
+
+        Critical columns (``node_id``, ``ref_doc_id``, ``text``,
+        ``metadata_``, ``embedding``) raise ``RuntimeError`` if their
+        ADD COLUMN fails — the adapter cannot function without them.
+        Non-critical columns (e.g. ``text_search_tsv``) log a warning
+        and are skipped.
+
+        Args:
+            fields: List of ``FieldSchema`` objects defining the target schema.
+            conn: Optional open psycopg connection to reuse.  If ``None``,
+                a new connection is opened via ``_psycopg_connect()`` and
+                closed before returning.
+        """
+        # Columns the adapter cannot function without
+        _CRITICAL_COLUMNS = {"node_id", "ref_doc_id", "text", "metadata_", "embedding"}
+
+        # Map DataType enum → PostgreSQL type name
+        type_map = {
+            DataType.INT64: "BIGINT",
+            DataType.VARCHAR: "VARCHAR({max_length})",
+            DataType.TEXT: "TEXT",
+            DataType.JSON: "JSONB",
+            DataType.FLOAT_VECTOR: "VECTOR({dim})",
+            DataType.FLOAT16_VECTOR: "HALFVECTOR({dim})",
+        }
+
+        alter_statements = []
+        for field in fields:
+            if field.name == "id":
+                # Primary key — use BIGINT, handled separately by
+                # _ensure_auto_id_sequence for the DEFAULT/sequence.
+                pg_type = "BIGINT"
+            else:
+                pg_type = type_map.get(field.dtype)
+                if pg_type is None:
+                    # Unknown dtype not in type_map — skip with warning.
+                    # All known dtypes are covered by type_map, so this
+                    # path is only reached for future DataType additions.
+                    _logger.warning(
+                        "Skipping field '%s': unsupported dtype %s "
+                        "(not in type_map)",
+                        field.name, field.dtype,
+                    )
+                    continue
+                if "{max_length}" in pg_type:
+                    pg_type = pg_type.format(max_length=field.max_length or 256)
+                if "{dim}" in pg_type:
+                    pg_type = pg_type.format(dim=field.dim or self.embed_dim)
+
+            alter_statements.append((
+                field.name,
+                f'ALTER TABLE "{self._collection_name}" '
+                f"ADD COLUMN "
+                f'"{field.name}" {pg_type}',
+            ))
+
+        if not alter_statements:
+            return
+
+        owns_conn = conn is None
+        try:
+            if owns_conn:
+                conn = self._psycopg_connect()
+
+            with conn.cursor() as cur:
+                # Query existing columns with table_schema filter to avoid
+                # false matches from other schemas with same table name.
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = %s",
+                    (self._collection_name, self.schema_name),
+                )
+                existing_cols = {row[0] for row in cur.fetchall()}
+
+                for col_name, sql in alter_statements:
+                    if col_name in existing_cols:
+                        continue  # Column already exists — skip
+                    try:
+                        cur.execute(sql)
+                    except Exception as col_err:
+                        err_msg = str(col_err).lower()
+                        # "already exists" / "duplicate column" → the
+                        # column is present; treat as no-op regardless
+                        # of whether the information_schema check
+                        # caught it above.
+                        if (
+                            "already exist" in err_msg
+                            or "duplicate" in err_msg
+                        ):
+                            _logger.debug(
+                                "Column '%s' already exists "
+                                "(detected via ADD COLUMN error)",
+                                col_name,
+                            )
+                            continue
+                        if col_name in _CRITICAL_COLUMNS:
+                            raise RuntimeError(
+                                f"Failed to add critical column "
+                                f"'{col_name}' to "
+                                f"'{self._collection_name}': "
+                                f"{col_err}"
+                            ) from col_err
+                        _logger.warning(
+                            "ADD COLUMN skipped for non-critical "
+                            "column '%s': %s",
+                            col_name, col_err,
+                        )
+            _logger.debug(
+                "Schema columns ensured for '%s'", self._collection_name
+            )
+        finally:
+            if owns_conn and conn is not None:
+                conn.close()
 
     def _create_hnsw_index(self) -> None:
         """Create a HNSW graph index on the embedding field.
@@ -471,14 +684,23 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             index_params=index_params,
         )
 
-    def close(self) -> _ImmediateAwaitable:
+    def close(self):
         """Close the VastbaseVectorStore and release all resources.
 
         Cleanup runs immediately on call (synchronous).  The returned
-        ``_ImmediateAwaitable`` allows ``await store.close()`` and
-        ``run_until_complete(store.close())`` to work without error.
+        coroutine (from ``_noop_coroutine``) allows ``await store.close()``
+        and ``asyncio.run(store.close())`` to work without error.
         Closes both the sync VastbaseClient and the async collection
         if either is open.
+
+        Calling patterns supported:
+
+        - Sync: ``store.close()`` — cleanup runs immediately; returned
+          coroutine is discarded (may emit RuntimeWarning).
+        - Async: ``await store.close()`` — cleanup already ran; returns
+          immediately.
+        - ``asyncio.run(store.close())`` — works because return value
+          passes ``inspect.iscoroutine()``.
         """
         if self._async_collection is not None:
             try:
@@ -495,7 +717,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             self._client = None
         self._is_initialized = False
         self._async_initialized = False
-        return _ImmediateAwaitable()
+        return _noop_coroutine()
 
     async def aclose(self) -> None:
         """Alias for :meth:`close` — provided for explicit async naming.
@@ -1131,14 +1353,31 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
+        # Build search params dict and invoke customize_search_fn if set
+        search_params: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "data": [query.query_embedding],
+            "anns_field": "embedding",
+            "param": {"metric_type": "cosine", "ef": int(ef_search)},
+            "limit": query.similarity_top_k,
+            "expr": db_expr,
+            "output_fields": ["node_id", "text", "metadata_", "embedding"],
+        }
+
+        if self._customize_search_fn is not None:
+            try:
+                search_params = self._customize_search_fn(search_params, **kwargs)
+            except Exception as e:
+                _logger.warning("customize_search_fn raised an error: %s", e)
+
         results = self._client.search(
-            self._collection_name,
-            data=[query.query_embedding],
-            anns_field="embedding",
-            param={"metric_type": "cosine", "ef": int(ef_search)},
-            limit=query.similarity_top_k,
-            expr=db_expr,
-            output_fields=["node_id", "text", "metadata_", "embedding"],
+            search_params["collection_name"],
+            data=search_params["data"],
+            anns_field=search_params["anns_field"],
+            param=search_params["param"],
+            limit=search_params["limit"],
+            expr=search_params.get("expr"),
+            output_fields=search_params["output_fields"],
         )
 
         hits = results[0] if results else []
@@ -1448,14 +1687,31 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
-        col = AsyncCollection(self._collection_name)
+        # Build search params dict and invoke customize_search_fn if set
+        search_params: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "data": [query.query_embedding],
+            "anns_field": "embedding",
+            "param": {"metric_type": "cosine", "ef": int(ef_search)},
+            "limit": query.similarity_top_k,
+            "expr": db_expr,
+            "output_fields": ["node_id", "text", "metadata_", "embedding"],
+        }
+
+        if self._customize_search_fn is not None:
+            try:
+                search_params = self._customize_search_fn(search_params, **kwargs)
+            except Exception as e:
+                _logger.warning("customize_search_fn raised an error: %s", e)
+
+        col = AsyncCollection(search_params["collection_name"])
         results = await col.search(
-            data=[query.query_embedding],
-            anns_field="embedding",
-            param={"metric_type": "cosine", "ef": int(ef_search)},
-            limit=query.similarity_top_k,
-            expr=db_expr,
-            output_fields=["node_id", "text", "metadata_", "embedding"],
+            data=search_params["data"],
+            anns_field=search_params["anns_field"],
+            param=search_params["param"],
+            limit=search_params["limit"],
+            expr=search_params.get("expr"),
+            output_fields=search_params["output_fields"],
         )
 
         hits = results[0] if results else []

@@ -13,7 +13,6 @@ All tests use pyvastbase API exclusively — no SQLAlchemy, no psycopg2, no raw 
 """
 
 import pytest
-import asyncio
 from typing import List
 
 from llama_index.core.schema import BaseNode, IndexNode, TextNode
@@ -64,6 +63,12 @@ def test_full_crud_lifecycle():
     try:
         # 1. Add nodes
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
+
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
 
         nodes = [
             TextNode(
@@ -155,7 +160,7 @@ def test_full_crud_lifecycle():
         assert len(final) == 0
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        store.close()
 
 
 # ============================================================================
@@ -179,6 +184,12 @@ def test_hybrid_search_e2e():
     )
 
     try:
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
+
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
         nodes = [
@@ -226,7 +237,11 @@ def test_hybrid_search_e2e():
         assert "fox2" in node_ids
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        try:
+            store.clear()
+        except Exception:
+            pass
+        store.close()
 
 
 # ============================================================================
@@ -249,6 +264,11 @@ def test_index_node_roundtrip():
     )
 
     try:
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
         nodes = [
             TextNode(
                 text="original document",
@@ -276,7 +296,11 @@ def test_index_node_roundtrip():
         assert isinstance(res.nodes[1], TextNode)
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        try:
+            store.clear()
+        except Exception:
+            pass
+        store.close()
 
 
 # ============================================================================
@@ -306,6 +330,12 @@ def test_customize_search_fn_integration():
     )
 
     try:
+        # Clear stale data from previous runs
+        try:
+            store.clear()
+        except Exception:
+            pass
+
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
         node = TextNode(
@@ -328,7 +358,48 @@ def test_customize_search_fn_integration():
         assert "limit" in call_log[0] or "expr" in call_log[0]
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store.close())
+        try:
+            store.clear()
+        except Exception:
+            pass
+        store.close()
+
+
+@pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
+@pytest.mark.asyncio
+async def test_customize_search_fn_async_integration():
+    """Verify customize_search_fn callback is invoked during aquery (async path)."""
+    call_log = []
+
+    def log_calls(params: dict, **kwargs) -> dict:
+        call_log.append(params.copy())
+        return params
+
+    # Use same table as sync test — its data is already populated
+    store = VastbaseVectorStore.from_params(
+        host=VASTBASE_HOST,
+        port=VASTBASE_PORT,
+        database=VASTBASE_DATABASE,
+        user=VASTBASE_USER,
+        password=VASTBASE_PASSWORD,
+        table_name="test_custom_fn",
+        schema_name="public",
+        embed_dim=2,
+        customize_search_fn=log_calls,
+    )
+
+    try:
+        q = VectorStoreQuery(
+            query_embedding=_get_sample_vector(1.0), similarity_top_k=1
+        )
+        await store.aquery(q)
+
+        # Verify callback was called at least once with expected keys
+        assert len(call_log) >= 1, "customize_search_fn was not invoked during aquery()"
+        assert "limit" in call_log[0] or "expr" in call_log[0]
+
+    finally:
+        store.close()
 
 
 # ============================================================================
@@ -366,6 +437,16 @@ def test_multiple_stores_isolation():
     try:
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
 
+        # Clear stale data from previous runs
+        try:
+            store_a.clear()
+        except Exception:
+            pass
+        try:
+            store_b.clear()
+        except Exception:
+            pass
+
         node_a = TextNode(
             text="data in store A",
             id_="node_a",
@@ -401,5 +482,5 @@ def test_multiple_stores_isolation():
         store_b.clear()
 
     finally:
-        asyncio.get_event_loop().run_until_complete(store_a.close())
-        asyncio.get_event_loop().run_until_complete(store_b.close())
+        store_a.close()
+        store_b.close()
