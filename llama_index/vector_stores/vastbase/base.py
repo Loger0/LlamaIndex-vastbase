@@ -346,26 +346,13 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             index_params=index_params,
         )
 
-    def close(self) -> None:
-        """Close the VastbaseClient connection and release resources.
+    async def close(self) -> None:
+        """Close the VastbaseVectorStore and release all resources.
 
-        Synchronous — the underlying VastbaseClient uses psycopg (sync driver).
-        The conftest fixtures wrap this in run_until_complete for compatibility
-        with async test patterns; the try/except absorbs the TypeError if close
-        is not a coroutine.
+        Async — mirrors upstream PGVectorStore.close() which is also async.
+        Closes both the sync VastbaseClient and the async collection if either
+        is open.
         """
-        if self._client is not None:
-            try:
-                self._client.close()
-            except Exception as e:
-                _logger.warning("Error closing Vastbase client: %s", e)
-            self._client = None
-        self._async_collection = None
-        self._is_initialized = False
-        self._async_initialized = False
-
-    async def aclose(self) -> None:
-        """Async close for use with AsyncCollection."""
         if self._async_collection is not None:
             try:
                 if hasattr(self._async_collection, "close"):
@@ -374,10 +361,17 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 _logger.warning("Error closing async collection: %s", e)
             self._async_collection = None
         if self._client is not None:
-            self._client.close()
+            try:
+                self._client.close()
+            except Exception as e:
+                _logger.warning("Error closing Vastbase client: %s", e)
             self._client = None
         self._is_initialized = False
         self._async_initialized = False
+
+    async def aclose(self) -> None:
+        """Alias for :meth:`close` — provided for explicit async naming."""
+        await self.close()
 
     # ------------------------------------------------------------------
     # Data conversion helpers
