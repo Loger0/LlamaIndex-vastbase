@@ -6,6 +6,7 @@ with pyvastbase (VastbaseClient + Collection API).
 All vector operations use pyvastbase exclusively — no raw SQL.
 """
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -33,6 +34,46 @@ from pyvastbase import (
 )
 
 _logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Awaitable helper — close() runs cleanup immediately AND supports await
+# ---------------------------------------------------------------------------
+
+
+class _ImmediateAwaitable:
+    """An awaitable whose side-effects run immediately on construction.
+
+    Used by ``close()`` so that both sync and async callers work:
+
+    - Sync: ``store.close()`` → cleanup runs immediately in ``__init__``;
+      the returned ``_ImmediateAwaitable`` is discarded.
+    - Async: ``await store.close()`` → cleanup already ran in ``__init__``;
+      ``await`` returns immediately via a completed Future.
+    - ``asyncio.get_event_loop().run_until_complete(store.close())`` →
+      same as the async path.
+    """
+
+    __slots__ = ()
+
+    def __await__(self):  # type: ignore[no-untyped-def]
+        # Create a completed Future on whatever loop is available.
+        # Gracefully handle the case where no event loop exists
+        # (Python 3.13 deprecated get_event_loop without a running loop).
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        if loop is None:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        f: asyncio.Future = loop.create_future()
+        f.set_result(None)
+        return f.__await__()
 
 
 # ---------------------------------------------------------------------------
@@ -346,13 +387,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             index_params=index_params,
         )
 
-    def close(self) -> None:
+    def close(self) -> _ImmediateAwaitable:
         """Close the VastbaseClient connection and release resources.
 
-        Synchronous — the underlying VastbaseClient uses psycopg (sync driver).
-        The conftest fixtures wrap this in run_until_complete for compatibility
-        with async test patterns; the try/except absorbs the TypeError if close
-        is not a coroutine.
+        Cleanup runs immediately on call (synchronous).  The returned
+        ``_ImmediateAwaitable`` allows ``await store.close()`` and
+        ``run_until_complete(store.close())`` to work without error.
         """
         if self._client is not None:
             try:
@@ -363,6 +403,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         self._async_collection = None
         self._is_initialized = False
         self._async_initialized = False
+        return _ImmediateAwaitable()
 
     async def aclose(self) -> None:
         """Async close for use with AsyncCollection."""
@@ -988,21 +1029,58 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         mode = query.mode
 
         if mode == VectorStoreQueryMode.DEFAULT:
-            return self._query_default(query, **kwargs)
+            return self._query_with_score(query, **kwargs)
+        elif mode in (VectorStoreQueryMode.SPARSE, VectorStoreQueryMode.TEXT_SEARCH):
+            return self._sparse_query_with_rank(query, **kwargs)
+        elif mode == VectorStoreQueryMode.HYBRID:
+            return self._hybrid_query(query, **kwargs)
         elif mode == VectorStoreQueryMode.MMR:
-            raise ValueError(
-                "MMR is not supported in VastbaseVectorStore. "
-                "Use LlamaIndex's VectorIndexRetriever for MMR reranking."
-            )
+            return self._mmr_query(query, **kwargs)
         else:
-            raise NotImplementedError(
-                f"Wave 2: query mode {mode} not yet implemented"
-            )
+            raise ValueError(f"Invalid query mode: {mode}")
 
-    def _query_default(
+    def _extract_hit_rows(self, hits: Any) -> List[Dict[str, Any]]:
+        """Convert search result hits to a list of row dicts.
+
+        Handles various hit data formats: dict, object with attributes,
+        or raw dict.  Attaches ``_distance`` from each hit's distance
+        attribute so scores stay aligned with rows through filtering.
+        """
+        rows: List[Dict[str, Any]] = []
+        for hit in hits:
+            row: Dict[str, Any] = {}
+            if hasattr(hit, "data") and isinstance(hit.data, dict):
+                row = dict(hit.data)
+            elif isinstance(hit, dict):
+                row = dict(hit)
+            elif hasattr(hit, "data") and hit.data is not None:
+                try:
+                    row = {
+                        k: v
+                        for k, v in vars(hit.data).items()
+                        if not k.startswith("_")
+                    }
+                except (TypeError, AttributeError):
+                    pass
+
+            if "node_id" not in row:
+                row["node_id"] = str(getattr(hit, "id", ""))
+
+            dist = getattr(hit, "distance", None)
+            if dist is not None:
+                row["_distance"] = float(dist)
+
+            rows.append(row)
+        return rows
+
+    def _query_with_score(
         self, query: VectorStoreQuery, **kwargs: Any
     ) -> VectorStoreQueryResult:
-        """Execute DEFAULT mode vector similarity search."""
+        """Execute DEFAULT mode vector similarity search.
+
+        Uses ``client.search()`` with COSINE metric type and converts
+        cosine distance to similarity score (``1.0 - distance``).
+        """
         if query.query_embedding is None:
             raise ValueError("query_embedding is required for DEFAULT mode")
 
@@ -1023,40 +1101,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             output_fields=["node_id", "text", "metadata_", "embedding"],
         )
 
-        # Build row dicts from search results
-        rows: List[Dict[str, Any]] = []
-
         hits = results[0] if results else []
-        for hit in hits:
-            row: Dict[str, Any] = {}
-            if hasattr(hit, "data") and isinstance(hit.data, dict):
-                row = dict(hit.data)
-            elif isinstance(hit, dict):
-                row = dict(hit)
-            elif hasattr(hit, "data") and hit.data is not None:
-                # hit.data is an object (not dict) — extract fields via vars()
-                try:
-                    row = {k: v for k, v in vars(hit.data).items()
-                           if not k.startswith("_")}
-                except (TypeError, AttributeError):
-                    pass
+        rows = self._extract_hit_rows(hits)
 
-            # Ensure node_id is set
-            if "node_id" not in row:
-                row["node_id"] = str(getattr(hit, "id", ""))
-
-            # Attach distance to the row BEFORE filtering so scores stay aligned
-            dist = getattr(hit, "distance", None)
-            if dist is not None:
-                row["_distance"] = float(dist)
-
-            rows.append(row)
-
-        # Apply client-side filters (distance travels with the row)
         if client_filters:
             rows = self._apply_client_filters(rows, client_filters)
 
-        # Convert to nodes
         nodes: List[BaseNode] = []
         ids: List[str] = []
         similarities: List[float] = []
@@ -1075,34 +1125,283 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             similarities=similarities if similarities else None,
         )
 
+    # ------------------------------------------------------------------
+    # Query — SPARSE / TEXT_SEARCH mode
+    # ------------------------------------------------------------------
+
+    def _sparse_query_with_rank(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Execute SPARSE / TEXT_SEARCH mode via text search.
+
+        Uses client-side ILIKE fallback on the ``text`` field since
+        Vastbase PG full-text functions (to_tsvector / to_tsquery) may
+        not be available through the pyvastbase expr interface.
+
+        Returns results ranked by keyword-match count (more matches
+        → higher score).
+        """
+        import re
+
+        if query.query_str is None:
+            raise ValueError(
+                "query_str is required for SPARSE/TEXT_SEARCH mode"
+            )
+
+        sparse_top_k = getattr(
+            query, "sparse_top_k", None
+        ) or query.similarity_top_k
+
+        # Clean query string — same regex as upstream PGVectorStore
+        cleaned = re.sub(r"(?!\b\.\b)\W+", " ", query.query_str).strip()
+        keywords = [kw for kw in cleaned.split() if kw]
+
+        if not keywords:
+            return VectorStoreQueryResult(nodes=[], ids=[], similarities=[])
+
+        # Build ILIKE expr on the text field for candidate retrieval.
+        # Use loose substring match in SQL, then apply strict word
+        # boundary scoring in Python (PG ILIKE \m/\M not available
+        # through pyvastbase on all Vastbase builds).
+        like_clauses = [
+            f"text ILIKE '%{self._escape(kw)}%'" for kw in keywords
+        ]
+        text_expr = " OR ".join(like_clauses)
+
+        # Combine with metadata filters
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+        if db_expr:
+            combined_expr = f"({text_expr}) AND ({db_expr})"
+        else:
+            combined_expr = f"({text_expr})"
+
+        # Over-fetch to allow client-side word-boundary re-ranking
+        fetch_limit = max(sparse_top_k * 10, 100)
+
+        rows = self._client.query(
+            self._collection_name,
+            expr=combined_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+            limit=fetch_limit,
+        )
+
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+
+        # Score by word boundary match count and sort descending
+        import re as _re
+
+        def _word_score(text: str) -> float:
+            t = text.lower()
+            hits = sum(
+                1
+                for kw in keywords
+                if _re.search(r"\b" + _re.escape(kw.lower()) + r"\b", t)
+            )
+            return hits / len(keywords) if keywords else 0.0
+
+        scored = [(row, _word_score(row.get("text", "") or "")) for row in rows]
+        scored = [(r, s) for r, s in scored if s > 0]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for row, score in scored[:sparse_top_k]:
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            similarities.append(score)
+
+        return VectorStoreQueryResult(
+            nodes=nodes, ids=ids, similarities=similarities
+        )
+
+    # ------------------------------------------------------------------
+    # Query — HYBRID mode (dense + sparse dedup)
+    # ------------------------------------------------------------------
+
+    def _hybrid_query(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Execute HYBRID mode — dense vector search + sparse text search.
+
+        Mirrors upstream PGVectorStore hybrid search behaviour:
+        1. Run dense search (COSINE similarity) → top ``similarity_top_k``
+        2. Run sparse search (ILIKE text match) → top ``sparse_top_k``
+        3. Merge: dense results first, then unseen sparse results
+        4. Deduplicate by node_id
+        """
+        if query.query_embedding is None:
+            raise ValueError("query_embedding is required for HYBRID mode")
+        if query.query_str is None:
+            raise ValueError("query_str is required for HYBRID mode")
+
+        similarity_top_k = query.similarity_top_k
+        sparse_top_k = getattr(
+            query, "sparse_top_k", None
+        ) or similarity_top_k
+
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+        ef_search = kwargs.get(
+            "hnsw_ef_search",
+            (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
+        )
+
+        # --- Dense search ---
+        dense_results = self._client.search(
+            self._collection_name,
+            data=[query.query_embedding],
+            anns_field="embedding",
+            param={"metric_type": "cosine", "ef": int(ef_search)},
+            limit=similarity_top_k,
+            expr=db_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+        )
+
+        dense_hits = dense_results[0] if dense_results else []
+        dense_rows = self._extract_hit_rows(dense_hits)
+
+        # --- Sparse search ---
+        import re
+
+        cleaned = re.sub(r"(?!\b\.\b)\W+", " ", query.query_str).strip()
+        keywords = [kw for kw in cleaned.split() if kw]
+        sparse_rows: List[Dict[str, Any]] = []
+
+        if keywords:
+            # Loose ILIKE for candidate retrieval
+            like_clauses = [
+                f"text ILIKE '%{self._escape(kw)}%'" for kw in keywords
+            ]
+            text_expr = " OR ".join(like_clauses)
+            sparse_expr = f"({text_expr})"
+            if db_expr:
+                sparse_expr = f"{sparse_expr} AND ({db_expr})"
+
+            # Over-fetch for client-side word-boundary filtering
+            fetch_limit = max(sparse_top_k * 10, 100)
+            raw_sparse = self._client.query(
+                self._collection_name,
+                expr=sparse_expr,
+                output_fields=[
+                    "node_id",
+                    "text",
+                    "metadata_",
+                    "embedding",
+                ],
+                limit=fetch_limit,
+            )
+
+            # Client-side word boundary filter
+            def _has_word_match(text: str) -> bool:
+                t = text.lower()
+                return any(
+                    re.search(r"\b" + re.escape(kw.lower()) + r"\b", t)
+                    for kw in keywords
+                )
+
+            sparse_rows = [
+                r
+                for r in raw_sparse
+                if _has_word_match(r.get("text", "") or "")
+            ][:sparse_top_k]
+
+        # --- Merge: dense first, then unseen sparse ---
+        seen_ids: set = set()
+        merged: List[Dict[str, Any]] = []
+
+        for row in dense_rows:
+            nid = row.get("node_id", "")
+            if nid and nid not in seen_ids:
+                seen_ids.add(nid)
+                merged.append(row)
+
+        for row in sparse_rows:
+            nid = row.get("node_id", "")
+            if nid and nid not in seen_ids:
+                seen_ids.add(nid)
+                merged.append(row)
+
+        # Apply client-side filters
+        if client_filters:
+            merged = self._apply_client_filters(merged, client_filters)
+
+        # Build result
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for row in merged:
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            dist = row.get("_distance")
+            if dist is not None:
+                similarities.append(1.0 - float(dist))
+
+        return VectorStoreQueryResult(
+            nodes=nodes,
+            ids=ids,
+            similarities=similarities if similarities else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Query — MMR mode (not supported — matches upstream PGVectorStore)
+    # ------------------------------------------------------------------
+
+    def _mmr_query(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """MMR is not supported — raises ValueError.
+
+        Matches upstream PGVectorStore behaviour where MMR mode
+        delegates to LlamaIndex's VectorIndexRetriever instead.
+        """
+        raise ValueError(
+            "MMR is not supported in VastbaseVectorStore. "
+            "Use LlamaIndex's VectorIndexRetriever for MMR reranking."
+        )
+
     async def aquery(
         self, query: VectorStoreQuery, **kwargs: Any
     ) -> VectorStoreQueryResult:
         """Async version of ``query()``.
 
-        Wave 1 implements DEFAULT mode only.
+        Dispatches to the appropriate async query method based on mode:
+        DEFAULT → ``_aquery_with_score``, SPARSE/TEXT_SEARCH →
+        ``_async_sparse_query_with_rank``, HYBRID → ``_async_hybrid_query``,
+        MMR → raises ValueError.
         """
         self._initialize()
 
         mode = query.mode
 
-        if mode == VectorStoreQueryMode.MMR:
+        if mode == VectorStoreQueryMode.DEFAULT:
+            return await self._aquery_with_score(query, **kwargs)
+        elif mode in (VectorStoreQueryMode.SPARSE, VectorStoreQueryMode.TEXT_SEARCH):
+            return await self._async_sparse_query_with_rank(query, **kwargs)
+        elif mode == VectorStoreQueryMode.HYBRID:
+            return await self._async_hybrid_query(query, **kwargs)
+        elif mode == VectorStoreQueryMode.MMR:
             raise ValueError(
                 "MMR is not supported in VastbaseVectorStore. "
                 "Use LlamaIndex's VectorIndexRetriever for MMR reranking."
             )
+        else:
+            raise ValueError(f"Invalid query mode: {mode}")
 
-        if mode != VectorStoreQueryMode.DEFAULT:
-            raise NotImplementedError(
-                f"Wave 2: async query mode {mode} not yet implemented"
-            )
+    async def _aquery_with_score(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Async DEFAULT mode vector similarity search."""
+        if query.query_embedding is None:
+            raise ValueError("query_embedding is required for DEFAULT mode")
 
         await self._ensure_async_connection()
 
         from pyvastbase import AsyncCollection
-
-        if query.query_embedding is None:
-            raise ValueError("query_embedding is required for DEFAULT mode")
 
         db_expr, client_filters = self._build_filter_clause(query.filters)
         ef_search = kwargs.get(
@@ -1120,31 +1419,9 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             output_fields=["node_id", "text", "metadata_", "embedding"],
         )
 
-        rows: List[Dict[str, Any]] = []
-
         hits = results[0] if results else []
-        for hit in hits:
-            row: Dict[str, Any] = {}
-            if hasattr(hit, "data") and isinstance(hit.data, dict):
-                row = dict(hit.data)
-            elif isinstance(hit, dict):
-                row = dict(hit)
-            elif hasattr(hit, "data") and hit.data is not None:
-                # hit.data is an object (not dict) — extract fields via vars()
-                try:
-                    row = {k: v for k, v in vars(hit.data).items()
-                           if not k.startswith("_")}
-                except (TypeError, AttributeError):
-                    pass
-            if "node_id" not in row:
-                row["node_id"] = str(getattr(hit, "id", ""))
-            # Attach distance to the row BEFORE filtering so scores stay aligned
-            dist = getattr(hit, "distance", None)
-            if dist is not None:
-                row["_distance"] = float(dist)
-            rows.append(row)
+        rows = self._extract_hit_rows(hits)
 
-        # Apply client-side filters (distance travels with the row)
         if client_filters:
             rows = self._apply_client_filters(rows, client_filters)
 
@@ -1159,6 +1436,205 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             dist = row.pop("_distance", None)
             if dist is not None:
                 similarities.append(1.0 - dist)
+
+        return VectorStoreQueryResult(
+            nodes=nodes,
+            ids=ids,
+            similarities=similarities if similarities else None,
+        )
+
+    async def _async_sparse_query_with_rank(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Async SPARSE / TEXT_SEARCH mode via ILIKE text search."""
+        import re
+
+        if query.query_str is None:
+            raise ValueError(
+                "query_str is required for SPARSE/TEXT_SEARCH mode"
+            )
+
+        await self._ensure_async_connection()
+
+        from pyvastbase import AsyncCollection
+
+        sparse_top_k = getattr(
+            query, "sparse_top_k", None
+        ) or query.similarity_top_k
+
+        # Clean query string — same regex as upstream PGVectorStore
+        cleaned = re.sub(r"(?!\b\.\b)\W+", " ", query.query_str).strip()
+        keywords = [kw for kw in cleaned.split() if kw]
+
+        if not keywords:
+            return VectorStoreQueryResult(nodes=[], ids=[], similarities=[])
+
+        # Build ILIKE expr — loose substring for candidate retrieval
+        like_clauses = [
+            f"text ILIKE '%{self._escape(kw)}%'" for kw in keywords
+        ]
+        text_expr = " OR ".join(like_clauses)
+
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+        if db_expr:
+            combined_expr = f"({text_expr}) AND ({db_expr})"
+        else:
+            combined_expr = f"({text_expr})"
+
+        # Over-fetch for client-side word-boundary re-ranking
+        fetch_limit = max(sparse_top_k * 10, 100)
+
+        col = AsyncCollection(self._collection_name)
+        rows = await col.query(
+            expr=combined_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+            limit=fetch_limit,
+        )
+
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+
+        # Score by word boundary match count and sort descending
+        def _word_score(text: str) -> float:
+            t = text.lower()
+            hits = sum(
+                1
+                for kw in keywords
+                if re.search(r"\b" + re.escape(kw.lower()) + r"\b", t)
+            )
+            return hits / len(keywords) if keywords else 0.0
+
+        scored = [(row, _word_score(row.get("text", "") or "")) for row in rows]
+        scored = [(r, s) for r, s in scored if s > 0]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for row, score in scored[:sparse_top_k]:
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            similarities.append(score)
+
+        return VectorStoreQueryResult(
+            nodes=nodes, ids=ids, similarities=similarities
+        )
+
+    async def _async_hybrid_query(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Async HYBRID mode — dense vector + sparse text search."""
+        if query.query_embedding is None:
+            raise ValueError("query_embedding is required for HYBRID mode")
+        if query.query_str is None:
+            raise ValueError("query_str is required for HYBRID mode")
+
+        await self._ensure_async_connection()
+
+        from pyvastbase import AsyncCollection
+
+        similarity_top_k = query.similarity_top_k
+        sparse_top_k = getattr(
+            query, "sparse_top_k", None
+        ) or similarity_top_k
+
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+        ef_search = kwargs.get(
+            "hnsw_ef_search",
+            (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
+        )
+
+        col = AsyncCollection(self._collection_name)
+
+        # --- Dense search ---
+        dense_results = await col.search(
+            data=[query.query_embedding],
+            anns_field="embedding",
+            param={"metric_type": "cosine", "ef": int(ef_search)},
+            limit=similarity_top_k,
+            expr=db_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+        )
+
+        dense_hits = dense_results[0] if dense_results else []
+        dense_rows = self._extract_hit_rows(dense_hits)
+
+        # --- Sparse search ---
+        import re
+
+        cleaned = re.sub(r"(?!\b\.\b)\W+", " ", query.query_str).strip()
+        keywords = [kw for kw in cleaned.split() if kw]
+        sparse_rows: List[Dict[str, Any]] = []
+
+        if keywords:
+            # Loose ILIKE for candidate retrieval
+            like_clauses = [
+                f"text ILIKE '%{self._escape(kw)}%'" for kw in keywords
+            ]
+            text_expr = " OR ".join(like_clauses)
+            sparse_expr = f"({text_expr})"
+            if db_expr:
+                sparse_expr = f"{sparse_expr} AND ({db_expr})"
+
+            # Over-fetch for client-side word-boundary filtering
+            fetch_limit = max(sparse_top_k * 10, 100)
+            raw_sparse = await col.query(
+                expr=sparse_expr,
+                output_fields=[
+                    "node_id",
+                    "text",
+                    "metadata_",
+                    "embedding",
+                ],
+                limit=fetch_limit,
+            )
+
+            # Client-side word boundary filter
+            def _has_word_match(text: str) -> bool:
+                t = text.lower()
+                return any(
+                    re.search(r"\b" + re.escape(kw.lower()) + r"\b", t)
+                    for kw in keywords
+                )
+
+            sparse_rows = [
+                r
+                for r in raw_sparse
+                if _has_word_match(r.get("text", "") or "")
+            ][:sparse_top_k]
+
+        # --- Merge: dense first, then unseen sparse ---
+        seen_ids: set = set()
+        merged: List[Dict[str, Any]] = []
+
+        for row in dense_rows:
+            nid = row.get("node_id", "")
+            if nid and nid not in seen_ids:
+                seen_ids.add(nid)
+                merged.append(row)
+
+        for row in sparse_rows:
+            nid = row.get("node_id", "")
+            if nid and nid not in seen_ids:
+                seen_ids.add(nid)
+                merged.append(row)
+
+        if client_filters:
+            merged = self._apply_client_filters(merged, client_filters)
+
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for row in merged:
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            dist = row.get("_distance")
+            if dist is not None:
+                similarities.append(1.0 - float(dist))
 
         return VectorStoreQueryResult(
             nodes=nodes,
