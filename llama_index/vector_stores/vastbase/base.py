@@ -1687,14 +1687,31 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
-        col = AsyncCollection(self._collection_name)
+        # Build search params dict and invoke customize_search_fn if set
+        search_params: Dict[str, Any] = {
+            "collection_name": self._collection_name,
+            "data": [query.query_embedding],
+            "anns_field": "embedding",
+            "param": {"metric_type": "cosine", "ef": int(ef_search)},
+            "limit": query.similarity_top_k,
+            "expr": db_expr,
+            "output_fields": ["node_id", "text", "metadata_", "embedding"],
+        }
+
+        if self._customize_search_fn is not None:
+            try:
+                search_params = self._customize_search_fn(search_params, **kwargs)
+            except Exception as e:
+                _logger.warning("customize_search_fn raised an error: %s", e)
+
+        col = AsyncCollection(search_params["collection_name"])
         results = await col.search(
-            data=[query.query_embedding],
-            anns_field="embedding",
-            param={"metric_type": "cosine", "ef": int(ef_search)},
-            limit=query.similarity_top_k,
-            expr=db_expr,
-            output_fields=["node_id", "text", "metadata_", "embedding"],
+            data=search_params["data"],
+            anns_field=search_params["anns_field"],
+            param=search_params["param"],
+            limit=search_params["limit"],
+            expr=search_params.get("expr"),
+            output_fields=search_params["output_fields"],
         )
 
         hits = results[0] if results else []

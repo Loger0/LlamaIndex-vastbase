@@ -191,8 +191,6 @@ def test_hybrid_search_e2e():
             pass
 
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-        except Exception:
-            pass
 
         nodes = [
             TextNode(
@@ -339,8 +337,6 @@ def test_customize_search_fn_integration():
             pass
 
         from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
-        except Exception:
-            pass
 
         node = TextNode(
             text="test",
@@ -366,6 +362,43 @@ def test_customize_search_fn_integration():
             store.clear()
         except Exception:
             pass
+        store.close()
+
+
+@pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
+@pytest.mark.asyncio
+async def test_customize_search_fn_async_integration():
+    """Verify customize_search_fn callback is invoked during aquery (async path)."""
+    call_log = []
+
+    def log_calls(params: dict, **kwargs) -> dict:
+        call_log.append(params.copy())
+        return params
+
+    # Use same table as sync test — its data is already populated
+    store = VastbaseVectorStore.from_params(
+        host=VASTBASE_HOST,
+        port=VASTBASE_PORT,
+        database=VASTBASE_DATABASE,
+        user=VASTBASE_USER,
+        password=VASTBASE_PASSWORD,
+        table_name="test_custom_fn",
+        schema_name="public",
+        embed_dim=2,
+        customize_search_fn=log_calls,
+    )
+
+    try:
+        q = VectorStoreQuery(
+            query_embedding=_get_sample_vector(1.0), similarity_top_k=1
+        )
+        await store.aquery(q)
+
+        # Verify callback was called at least once with expected keys
+        assert len(call_log) >= 1, "customize_search_fn was not invoked during aquery()"
+        assert "limit" in call_log[0] or "expr" in call_log[0]
+
+    finally:
         store.close()
 
 
