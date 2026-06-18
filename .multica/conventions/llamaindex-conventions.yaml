@@ -1,0 +1,322 @@
+meta:
+  framework: "llamaindex"
+  component: "vector_store"
+  upstream_ref: "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/vector_stores/llama-index-vector-stores-postgres"
+  upstream_version: "0.8.1"
+  cross_validation_ref: "https://github.com/run-llama/llama_index/tree/main/llama-index-integrations/vector_stores/llama-index-vector-stores-qdrant"
+  extracted_at: "2026-06-17T10:00:00Z"
+  extractor_version: "2.0"
+  integration_mode: "standalone"
+
+project_structure:
+  package_naming: "llama-index-vector-stores-<backend>"
+  # Evidence: llama-index-vector-stores-postgres (v0.8.1), llama-index-vector-stores-qdrant (v0.10.1)
+  module_layout:
+    - path: "llama_index/vector_stores/<backend>/"
+      files:
+        - "__init__.py"
+        - "base.py"
+  # Evidence: Both PGVectorStore and Qdrant use single-file base.py pattern
+  file_naming: "snake_case"
+  # Evidence: base.py, types.py, utils.py
+  pyproject_requires:
+    build_system: "hatchling"
+    python: ">=3.10,<4.0"
+    # Evidence: PGVectorStore requires ">=3.10,<4.0", Qdrant requires ">=3.10,<3.14"
+    core_dependency_pattern: "llama-index-core>=0.13.0,<0.15"
+    # Evidence: Both PGVectorStore and Qdrant use this exact range
+    backend_dependency_pattern: "<backend-sdk> (single package replacing upstream driver stack)"
+    # Evidence: PGVectorStore uses 4 packages (psycopg2-binary, asyncpg, pgvector, sqlalchemy); Vastbase uses 1 (pyvastbase)
+  pyproject_sections:
+    # Evidence: Both PGVectorStore and Qdrant pyproject.toml
+    - "[build-system] requires = [\"hatchling\"], build-backend = \"hatchling.build\""
+    - "[project] name, version, description, authors, requires-python, readme, license, dependencies"
+    - "[tool.hatch.build.targets.sdist] include = [\"llama_index/\"]"
+    - "[tool.hatch.build.targets.wheel] include = [\"llama_index/\"]"
+    - "[tool.llamahub] contains_example = false, import_path = \"llama_index.vector_stores.<backend>\""
+    - "[tool.llamahub.class_authors] <ClassName> = \"llama-index\""
+    - "[tool.pytest.ini_options] asyncio_mode = \"auto\""
+  init_export_pattern: |
+    # Evidence: PGVectorStore __init__.py
+    from llama_index.vector_stores.<backend>.base import <Backend>VectorStore
+    __all__ = ["<Backend>VectorStore"]
+
+code_style:
+  imports:
+    order:
+      - "stdlib (logging, re, typing)"
+      - "third_party (asyncpg, pgvector, psycopg2, sqlalchemy)"
+      - "framework (llama_index.core.*)"
+      - "local (from same package, if any)"
+    # Evidence: PGVectorStore base.py lines 1-43
+    grouping: "one_import_per_line_for_typing"
+    # Evidence: from typing import (Any, Dict, List, NamedTuple, Optional, Type, Union, Set, Tuple, Literal, Callable)
+    noqa_usage: "# noqa for dependency presence checks (import asyncpg # noqa)"
+    # Evidence: PGVectorStore base.py lines 17-20
+    lazy_imports: "deferred imports inside methods for optional heavy deps (sqlalchemy.create_engine, etc.)"
+    # Evidence: _connect() method imports create_engine, sessionmaker; _create_hnsw_index() imports sqlalchemy
+
+  naming:
+    class: "CamelCase"
+    # Evidence: PGVectorStore, DBEmbeddingRow, QdrantVectorStore
+    class_suffix: "VectorStore"
+    # Evidence: PGVectorStore, QdrantVectorStore
+    method: "snake_case"
+    # Evidence: _connect, _initialize, _node_to_table_row, _build_filter_clause
+    private_method: "_snake_case"
+    # Evidence: _initialize, _connect, _create_schema_if_not_exists, _query_with_score, _build_filter_clause
+    constant: "UPPER_SNAKE_CASE"
+    # Evidence: DEFAULT_MMR_PREFETCH_FACTOR, DEFAULT_DENSE_VECTOR_NAME
+    module_level_function: "snake_case (for standalone helpers)"
+    # Evidence: get_data_model(), _dedup_results()
+    fixture_variable: "snake_case"
+    # Evidence: pg, pg_hnsw, pg_hybrid, node_embeddings
+
+  type_annotations:
+    future_import: false
+    # Evidence: No `from __future__ import annotations` in either PGVectorStore or Qdrant
+    style: "typing module generics"
+    # Evidence: Dict[str, Any], List[BaseNode], Optional[Dict[str, Any]], Set[Tuple[str, PGType]]
+    optional_style: "Optional[X]"
+    # Evidence: Optional[Dict[str, Any]], Optional[Set[Tuple[str, PGType]]]
+    dict_type: "Dict[str, Any]"
+    # Evidence: hnsw_kwargs: Optional[Dict[str, Any]], create_engine_kwargs: Dict
+    list_type: "List[X]"
+    # Evidence: List[BaseNode], List[str], List[float]
+    union_style: "Union[A, B]"
+    # Evidence: Union[str, sqlalchemy.engine.URL]
+    callable_type: "Callable[[ArgTypes], ReturnType]"
+    # Evidence: Callable[[Select, Any, Any], Select]
+    literal_type: "Literal[...]"
+    # Evidence: PGType = Literal["text", "int", "integer", ...]
+    named_tuple: "typing.NamedTuple (for result rows)"
+    # Evidence: class DBEmbeddingRow(NamedTuple)
+
+  docstring:
+    style: "google"
+    # Evidence: All docstrings follow Google style with Args:, Returns: sections
+    class_docstring: |
+      # Evidence: PGVectorStore class docstring (lines 234-256)
+      One-line summary.
+
+      Examples:
+          `pip install <package-name>`
+
+          ```python
+          from llama_index.vector_stores.<backend> import <Class>
+          vector_store = <Class>.from_params(...)
+          ```
+    method_docstring_sections:
+      - "One-line summary"
+      - "Args:"
+      - "Returns:"
+    # Evidence: from_params() docstring (lines 437-467), delete_nodes() docstring (lines 1498-1504)
+    constructor_docstring: "Full Args: section for every parameter"
+    # Evidence: __init__() docstring (lines 315-339) documents all 16 parameters
+
+  pydantic_usage:
+    # Evidence: PGVectorStore inherits BasePydanticVectorStore which inherits BaseComponent (pydantic)
+    base_class: "BasePydanticVectorStore (from llama_index.core.vector_stores.types)"
+    private_attrs: "PrivateAttr() for internal state (_engine, _session, _is_initialized)"
+    # Evidence: _base: Any = PrivateAttr(), _engine: Optional[...] = PrivateAttr(default=None)
+    field_declarations: "Class-level type annotations (stores_text: bool, embed_dim: int)"
+    # Evidence: stores_text: bool = True, flat_metadata: bool = False, embed_dim: int
+    default_values: "Inline defaults in class body or __init__ signature"
+    # Evidence: hybrid_search: bool, initialization_fail_on_error: bool = False
+
+  logging:
+    pattern: "module-level logger"
+    # Evidence: _logger = logging.getLogger(__name__) (line 69)
+    naming: "_logger (private, underscore prefix)"
+    # Evidence: _logger.warning(...), _logger.debug(...)
+    usage: "Warning for non-fatal issues, debug for verbose tracing"
+    # Evidence: _logger.warning(f"postgres hybrid search does not support alpha parameter.")
+
+api_patterns:
+  class_design:
+    inheritance: "BasePydanticVectorStore"
+    # Evidence: class PGVectorStore(BasePydanticVectorStore)
+    class_attrs:
+      - "stores_text: bool = True"
+      - "flat_metadata: bool = False"
+      # Evidence: Both PGVectorStore and QdrantVectorStore
+    required_overrides:
+      - "client (property)"
+      - "add(nodes, **add_kwargs) -> List[str]"
+      - "delete(ref_doc_id, **delete_kwargs) -> None"
+      - "query(query, **kwargs) -> VectorStoreQueryResult"
+    optional_overrides:
+      - "async_add(nodes, **kwargs) -> List[str]"
+      - "aquery(query, **kwargs) -> VectorStoreQueryResult"
+      - "adelete(ref_doc_id, **delete_kwargs) -> None"
+      - "delete_nodes(node_ids, filters, **delete_kwargs) -> None"
+      - "adelete_nodes(node_ids, filters, **delete_kwargs) -> None"
+      - "get_nodes(node_ids, filters) -> List[BaseNode]"
+      - "aget_nodes(node_ids, filters) -> List[BaseNode]"
+      - "clear() -> None"
+      - "aclear() -> None"
+    class_name_method: |
+      # Evidence: PGVectorStore.class_name() returns "PGVectorStore"
+      @classmethod
+      def class_name(cls) -> str:
+          return "<ClassName>"
+
+  factory_methods:
+    - name: "from_params"
+      pattern: "classmethod that constructs instance from individual connection params (host, port, database, user, password)"
+      # Evidence: PGVectorStore.from_params() (lines 413-493)
+      returns: "cls instance"
+    - name: "__init__"
+      pattern: "Accepts connection strings or params, validates, calls super().__init__() with all fields, sets up PrivateAttr"
+      # Evidence: PGVectorStore.__init__() (lines 293-397)
+
+  initialization:
+    pattern: "lazy_initialize"
+    # Evidence: _initialize() called at start of add/query/delete/get_nodes/clear
+    guard: "_is_initialized flag (PrivateAttr)"
+    # Evidence: if not self._is_initialized: ... self._is_initialized = True
+    idempotent: true
+    # Evidence: Guard check prevents double initialization
+
+  error_handling:
+    pattern: "mixed (configurable fail_on_error)"
+    # Evidence: initialization_fail_on_error parameter + try/except with conditional raise
+    initialization_errors: "catch Exception, _logger.warning(), re-raise if fail_on_error"
+    # Evidence: _initialize() lines 596-621
+    parameter_validation: "raise ValueError with descriptive message"
+    # Evidence: ValueError("Make sure hnsw_ef_search..."), ValueError("Invalid query mode: ...")
+    unknown_operators: "_logger.warning(f'Unknown operator: {operator}'), fallback to default"
+    # Evidence: _to_postgres_operator() line 687
+
+  connection_management:
+    pattern: "lazy_connect"
+    # Evidence: _connect() called inside _initialize(), not in __init__
+    sync_async_dual: "Separate sync engine + async engine, both lazily created"
+    # Evidence: _engine (sync), _async_engine (async), both in _connect()
+    close_method: "async close() that disposes engines"
+    # Evidence: async def close(self) -> None (lines 399-406)
+
+  async_strategy:
+    pattern: "native_async_dual_api"
+    # Evidence: Separate async_add, aquery, adelete, aget_nodes, adelete_nodes, aclear methods
+    # Each has its own implementation using async session/engine
+    # NOT a wrapper around sync methods
+    session_context: "async with self._async_session() as session, session.begin()"
+    # Evidence: async_add (line 649), aquery (via _aquery_with_score), adelete (line 1484)
+
+  query_dispatch:
+    pattern: "if/elif chain on VectorStoreQueryMode enum"
+    # Evidence: query() and aquery() methods (lines 1414-1466)
+    modes:
+      - "DEFAULT → _query_with_score / _aquery_with_score"
+      - "SPARSE / TEXT_SEARCH → _sparse_query_with_rank / _async_sparse_query_with_rank"
+      - "HYBRID → _hybrid_query / _async_hybrid_query"
+      - "MMR → _mmr_query / _async_mmr_query (or raise ValueError if not supported)"
+      - "else → raise ValueError(f'Invalid query mode: {query.mode}')"
+
+  result_conversion:
+    pattern: "intermediate NamedTuple → VectorStoreQueryResult"
+    # Evidence: DBEmbeddingRow(NamedTuple) → _db_rows_to_query_result() → VectorStoreQueryResult
+    node_reconstruction: "metadata_dict_to_node() with fallback to TextNode() for legacy data"
+    # Evidence: _db_rows_to_query_result() lines 1385-1412
+    similarity_calculation: "similarity = 1 - distance"
+    # Evidence: (1 - item.distance) if item.distance is not None else 0
+
+  metadata_handling:
+    node_to_store: "node_to_metadata_dict(node, remove_text=True, flat_metadata=self.flat_metadata)"
+    # Evidence: _node_to_table_row() line 628
+    store_to_node: "metadata_dict_to_node(metadata) with fallback TextNode(id_, text, metadata)"
+    # Evidence: _db_rows_to_query_result() lines 1392-1401
+    field_name: "metadata_ (trailing underscore to avoid SQL keyword conflict)"
+    # Evidence: Column name metadata_ in both PGVectorStore data model
+
+serialization:
+  node_metadata_roundtrip: "node_to_metadata_dict() → JSON column → metadata_dict_to_node()"
+  # Evidence: Uses llama_index.core.vector_stores.utils functions
+  json_handling: "JSON/JSONB column for metadata storage"
+  # Evidence: metadata_dtype = JSONB if use_jsonb else JSON
+  column_types:
+    primary_key: "BIGINT autoincrement"
+    # Evidence: id = Column(BIGINT, primary_key=True, autoincrement=True)
+    vector: "FLOAT_VECTOR(embed_dim) or equivalent SDK type"
+    # Evidence: Column(Vector(embed_dim)) or Column(HALFVEC(embed_dim))
+    text: "VARCHAR"
+    # Evidence: text = Column(VARCHAR, nullable=False)
+    node_id: "VARCHAR"
+    # Evidence: node_id = Column(VARCHAR)
+    metadata: "JSON or JSONB"
+    # Evidence: metadata_ = Column(metadata_dtype)
+  text_storage: "Text stored in dedicated column, removed from metadata dict"
+  # Evidence: remove_text=True in node_to_metadata_dict()
+
+test_conventions:
+  framework: "pytest"
+  # Evidence: pyproject.toml [tool.pytest.ini_options], all tests use pytest fixtures
+  asyncio_mode: "auto"
+  # Evidence: [tool.pytest.ini_options] asyncio_mode = "auto"
+  filter_warnings: ["ignore::DeprecationWarning:"]
+  # Evidence: [tool.pytest.ini_options] filterwarnings
+
+  fixture_pattern:
+    connection: "session_scoped for shared connection, function_scoped for DB isolation"
+    # Evidence: conn fixture is scope="session", db/pg fixtures are function-scoped
+    store_instance: "function_scoped (creates and tears down per test)"
+    # Evidence: pg, pg_hnsw, pg_hybrid fixtures use yield + cleanup
+    test_data: "session_scoped (shared across tests)"
+    # Evidence: node_embeddings, hybrid_node_embeddings are scope="session"
+    cleanup: "yield fixture with teardown (DROP DATABASE / close connection)"
+    # Evidence: db fixture drops and recreates database
+
+  mock_strategy: "real_db_with_test_database"
+  # Evidence: Creates test_vector_db database per test, uses real psycopg2 connections
+  availability_guard: "try/except ImportError + connection check, skip if unavailable"
+  # Evidence: postgres_not_available flag (lines 50-63)
+  unit_test_addition: "MagicMock/AsyncMock for isolated unit tests without DB"
+  # Evidence: from unittest.mock import MagicMock, AsyncMock (line 3)
+
+  naming:
+    file: "test_<module>.py"
+    # Evidence: test_postgres.py
+    function: "test_<action>_<detail>"
+    # Evidence: test_add_to_db_and_query, test_query_hnsw, test_delete_nodes, test_hybrid_query
+    function_async: "async def test_<action>_<detail>"
+    # Evidence: Most test functions are async def
+    parametrized_suffix: "use_async parameter for sync/async variants"
+    # Evidence: @pytest.mark.parametrize("use_async", [False, True])
+
+  parametrize_patterns:
+    - "sync/async: @pytest.mark.parametrize('use_async', [False, True])"
+    # Evidence: MMR tests use this pattern extensively (lines 2260+)
+    - "vector variants: halfvec vs regular vector tests"
+    # Evidence: Tests check both regular and half-precision vectors
+
+  test_structure:
+    arrange: "Create nodes → Add to store"
+    act: "Query/delete/get_nodes"
+    assert: "Check result.nodes, result.similarities, result.ids"
+    # Evidence: test_add_to_db_and_query pattern
+
+  dev_dependencies:
+    - "pytest==7.2.1"
+    - "pytest-asyncio==0.21.0"
+    - "pytest-mock==3.11.1"
+    - "ruff==0.11.11"
+    - "mypy==0.991"
+    - "black[jupyter]<=23.9.1,>=23.7.0"
+    - "pytest-cov>=6.1.1"
+    # Evidence: pyproject.toml [dependency-groups] dev section
+
+  coverage_target: 0.85
+  # Inferred from dev dependency on pytest-cov and industry standard for LlamaIndex integrations
+
+_confidence:
+  project_structure: "observed"
+  # Directly observed in PGVectorStore and Qdrant pyproject.toml and file structure
+  code_style: "observed"
+  # Directly observed in PGVectorStore base.py (1698 lines) and Qdrant base.py (1733 lines)
+  api_patterns: "observed"
+  # Directly observed in PGVectorStore class design, factory methods, query dispatch
+  serialization: "observed"
+  # Directly observed in PGVectorStore node_to_table_row and db_rows_to_query_result
+  test_conventions: "observed"
+  # Directly observed in test_postgres.py (3222 lines) and pyproject.toml
