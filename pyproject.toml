@@ -1,18 +1,32 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "llama-index-vector-stores-vastbase"
 version = "0.1.0"
 description = "Vastbase vector store integration for LlamaIndex"
 readme = "README.md"
-requires-python = ">=3.9,<4.0"
+requires-python = ">=3.10,<4.0"
 license = {text = "MIT"}
 dependencies = [
     "llama-index-core>=0.13.0,<0.15",
     "pyvastbase>=0.2.7",
 ]
 
-[tool.setuptools.packages.find]
-include = ["llama_index*"]
+[tool.hatch.build.targets.sdist]
+include = ["llama_index/"]
+
+[tool.hatch.build.targets.wheel]
+include = ["llama_index/"]
+
+[tool.llamahub]
+contains_example = false
+import_path = "llama_index.vector_stores.vastbase"
+
+[tool.llamahub.class_authors]
+VastbaseVectorStore = "llama-index"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]

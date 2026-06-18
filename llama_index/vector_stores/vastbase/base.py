@@ -6,6 +6,7 @@ with pyvastbase (VastbaseClient + Collection API).
 All vector operations use pyvastbase exclusively — no raw SQL.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -174,6 +175,11 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             return None
         return self._client
 
+    @classmethod
+    def class_name(cls) -> str:
+        """Return class name for LlamaIndex component serialization."""
+        return "VastbaseVectorStore"
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -208,8 +214,9 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             if self.initialization_fail_on_error:
                 raise
             _logger.warning("VastbaseVectorStore initialization failed: %s", e)
+            return  # Failure: do NOT mark as initialized — allow retry
 
-        self._is_initialized = True
+        self._is_initialized = True  # Only reached on the success path
 
     def _create_collection_if_not_exists(self) -> None:
         """Create the Vastbase collection with the required schema.
@@ -375,13 +382,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             if "_node_type" in raw_metadata:
                 raw_metadata.pop("_node_type")
             if "_node_content" in raw_metadata:
-                import json
-
-                try:
-                    node_content = json.loads(raw_metadata.pop("_node_content"))
-                    # Merge node content fields into the node
-                except (json.JSONDecodeError, TypeError):
-                    node_content = {}
+                raw_metadata.pop("_node_content")  # TODO(Wave 2): parse and merge node_content
             node.metadata = {
                 k: v
                 for k, v in raw_metadata.items()
