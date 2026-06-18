@@ -17,10 +17,10 @@
 | Framework Diagnostics | framework-profiler | ✅ 完成 |
 | Requirement Analysis | eco-issue-analyst | ✅ 完成 |
 | Design / Spec + Plan | eco-issue-analyst | ✅ 完成 |
-| Plan-Check | code-reviewer | 🔄 进行中 |
+| Plan-Check | code-reviewer | ✅ 通过 |
 | Convention Extraction | convention-extractor | ✅ 完成 |
+| Test Planning | test-scout | ✅ 完成 |
 | User Review | human | ⏳ pending |
-| Test Planning | test-planner | ⏳ 待启动 |
 | Implementation | adapter-dev | ⏳ 待启动 |
 | Code Review | code-reviewer | ⏳ 待启动 |
 
@@ -42,6 +42,15 @@
 | `.multica/conventions/llamaindex-conventions.yaml` | LlamaIndex 编码规范 |
 | `.multica/specs/llamaindex-spec.md` | 需求规格文档（12 章节） |
 | `.multica/plans/llamaindex-plan.md` | 实施计划（9 Tasks TDD） |
+| `tests/conftest.py` | Vastbase 连接 fixtures + 节点数据 fixtures |
+| `tests/test_collection_init.py` | 9 tests |
+| `tests/test_crud.py` | 15 tests |
+| `tests/test_search.py` | 20 tests |
+| `tests/test_filter.py` | 21 tests |
+| `tests/test_async.py` | 13 tests |
+| `tests/test_integration.py` | 5 tests |
+| `tests/TEST_PLAN.md` | 测试交付报告 |
+| `tests/NYQUIST_MAP.md` | Nyquist 验证映射表 |
 | `.multica/STATE.md` | 本文件 — 项目状态追踪 |
 
 ## 诊断摘要
@@ -52,6 +61,14 @@
 - **参考实现**: PGVectorStore (1698 行, SQLAlchemy + pgvector)
 - **测试基础设施**: full（3222 行完整测试套件）
 - **开放决策**: 7 条（已确认）
+
+## Test-Scout 完成摘要
+
+- 上游测试分析：37 个测试场景（test_postgres.py 3222 行）
+- Vastbase 适配测试产出：83 个测试（6 个测试文件 + conftest.py）
+- 测试收集验证：✅ `pytest --collect-only` 成功（83 tests collected）
+- RED Phase 状态：测试全部预期 FAIL（VastbaseVectorStore 尚未实现）
+- Nyquist 覆盖率：100%（13 methods + 9 demo + 12 integration）
 
 ## Spec 自查结果
 
