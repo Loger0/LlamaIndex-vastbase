@@ -412,10 +412,26 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         try:
             if self._client.has_collection(self._collection_name):
                 # Collection exists — patch missing columns and ensure auto-id.
+                # Run in separate try/except blocks so a schema-patch failure
+                # does not prevent auto-id sequence setup.
                 conn = self._psycopg_connect()
                 try:
-                    self._ensure_schema_columns(fields, conn=conn)
-                    self._ensure_auto_id_sequence(conn=conn)
+                    try:
+                        self._ensure_schema_columns(fields, conn=conn)
+                    except Exception as e:
+                        _logger.warning(
+                            "Schema patch for '%s' failed: %s",
+                            self._collection_name,
+                            e,
+                        )
+                    try:
+                        self._ensure_auto_id_sequence(conn=conn)
+                    except Exception as e:
+                        _logger.warning(
+                            "Auto-id sequence setup for '%s' failed: %s",
+                            self._collection_name,
+                            e,
+                        )
                 finally:
                     conn.close()
                 return
@@ -443,21 +459,33 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         # pyvastbase API bug.  _ensure_schema_columns checks existing
         # columns via information_schema before issuing ALTER TABLE.
         #
-        # Use a shared psycopg connection for both schema patching and
-        # auto-id sequence setup to avoid opening two separate connections.
+        # IMPORTANT: _ensure_schema_columns and _ensure_auto_id_sequence
+        # are run in SEPARATE try/except blocks so a schema-patch failure
+        # (e.g. unsupported type) does NOT prevent the auto-id sequence
+        # from being set up — without that sequence every INSERT fails
+        # with NotNullViolation on the id column.
+        conn = self._psycopg_connect()
         try:
-            conn = self._psycopg_connect()
             try:
                 self._ensure_schema_columns(fields, conn=conn)
+            except Exception as e:
+                _logger.warning(
+                    "Schema patch for '%s' failed: %s",
+                    self._collection_name,
+                    e,
+                )
+
+            # Always attempt auto-id sequence — independent of schema patch.
+            try:
                 self._ensure_auto_id_sequence(conn=conn)
-            finally:
-                conn.close()
-        except Exception as e:
-            _logger.warning(
-                "Schema patch for '%s' failed: %s",
-                self._collection_name,
-                e,
-            )
+            except Exception as e:
+                _logger.warning(
+                    "Auto-id sequence setup for '%s' failed: %s",
+                    self._collection_name,
+                    e,
+                )
+        finally:
+            conn.close()
 
     def _ensure_auto_id_sequence(
         self, conn: Optional[Any] = None
@@ -564,14 +592,16 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         # Columns the adapter cannot function without
         _CRITICAL_COLUMNS = {"node_id", "ref_doc_id", "text", "metadata_", "embedding"}
 
-        # Map DataType enum → PostgreSQL type name
+        # Map DataType enum → Vastbase PostgreSQL type name.
+        # NOTE: Vastbase uses "floatvector(N)" (not pgvector's "vector(N)").
+        # These must match pyvastbase's FieldSchema.to_sql_type() output.
         type_map = {
             DataType.INT64: "BIGINT",
             DataType.VARCHAR: "VARCHAR({max_length})",
             DataType.TEXT: "TEXT",
             DataType.JSON: "JSONB",
-            DataType.FLOAT_VECTOR: "VECTOR({dim})",
-            DataType.FLOAT16_VECTOR: "HALFVECTOR({dim})",
+            DataType.FLOAT_VECTOR: "floatvector({dim})",
+            DataType.FLOAT16_VECTOR: "halfvector({dim})",
         }
 
         alter_statements = []
