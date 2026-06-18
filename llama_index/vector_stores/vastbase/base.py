@@ -280,6 +280,28 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 raise
             _logger.warning("Async connection initialization failed: %s", e)
 
+    def _psycopg_connect(self) -> "psycopg.Connection":
+        """Open a psycopg connection with autocommit for DDL operations.
+
+        Shared helper used by ``_ensure_schema_columns`` and
+        ``_ensure_auto_id_sequence`` to avoid opening multiple
+        independent connections.
+
+        Returns:
+            An open ``psycopg.Connection`` with ``autocommit=True``.
+            The caller is responsible for closing the connection.
+        """
+        import psycopg
+
+        return psycopg.connect(
+            host=self.host,
+            port=self.port,
+            dbname=self.database,
+            user=self.user,
+            password=self.password,
+            autocommit=True,
+        )
+
     def _build_schema_fields(self) -> list:
         """Build the list of FieldSchema for the collection.
 
@@ -322,7 +344,8 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         - embedding  : FLOAT_VECTOR(embed_dim) or FLOAT16_VECTOR(embed_dim)
 
         When the collection already exists, missing columns are patched
-        via ALTER TABLE ADD COLUMN IF NOT EXISTS.  This handles stale
+        via ALTER TABLE … ADD COLUMN after checking existing columns
+        through ``information_schema.columns``.  This handles stale
         collections created by older adapter versions that lacked
         columns such as ``ref_doc_id``.
 
@@ -338,8 +361,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         try:
             if self._client.has_collection(self._collection_name):
                 # Collection exists — patch missing columns and ensure auto-id.
-                self._ensure_schema_columns(fields)
-                self._ensure_auto_id_sequence()
+                conn = self._psycopg_connect()
+                try:
+                    self._ensure_schema_columns(fields, conn=conn)
+                    self._ensure_auto_id_sequence(conn=conn)
+                finally:
+                    conn.close()
                 return
         except Exception as e:
             # pyvastbase 0.2.7 has_collection has known edge cases
@@ -362,17 +389,28 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         # Always patch schema columns: CREATE TABLE IF NOT EXISTS is a
         # silent no-op for pre-existing tables with stale schemas, and
         # the has_collection path above may have been skipped due to the
-        # pyvastbase API bug.  ALTER TABLE ADD COLUMN IF NOT EXISTS is
-        # idempotent — no-op for columns that already exist.
-        self._ensure_schema_columns(fields)
+        # pyvastbase API bug.  _ensure_schema_columns checks existing
+        # columns via information_schema before issuing ALTER TABLE.
+        #
+        # Use a shared psycopg connection for both schema patching and
+        # auto-id sequence setup to avoid opening two separate connections.
+        try:
+            conn = self._psycopg_connect()
+            try:
+                self._ensure_schema_columns(fields, conn=conn)
+                self._ensure_auto_id_sequence(conn=conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            _logger.warning(
+                "Schema patch for '%s' failed: %s",
+                self._collection_name,
+                e,
+            )
 
-        # pyvastbase FieldSchema(auto_id=True) excludes "id" from INSERT but
-        # does NOT generate auto-increment DDL (no SERIAL / IDENTITY / DEFAULT).
-        # We must add a sequence-backed DEFAULT so the database fills the
-        # primary key automatically.
-        self._ensure_auto_id_sequence()
-
-    def _ensure_auto_id_sequence(self) -> None:
+    def _ensure_auto_id_sequence(
+        self, conn: Optional[Any] = None
+    ) -> None:
         """Ensure the ``id`` column has a sequence-backed DEFAULT.
 
         pyvastbase ``FieldSchema(auto_id=True)`` correctly omits the ``id``
@@ -383,84 +421,97 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         This method creates a dedicated sequence and wires it as the column
         DEFAULT via raw SQL — idempotent across repeated calls.
 
-        Uses a dedicated psycopg connection (not pyvastbase's pooled one)
-        to avoid transaction management conflicts.
+        Args:
+            conn: Optional open psycopg connection to reuse.  If ``None``,
+                a new connection is opened via ``_psycopg_connect()`` and
+                closed before returning.
         """
         assert self._client is not None
 
         seq_name = f"{self._collection_name}_id_seq"
 
+        owns_conn = conn is None
         try:
-            import psycopg
+            if owns_conn:
+                conn = self._psycopg_connect()
 
-            conn = psycopg.connect(
-                host=self.host,
-                port=self.port,
-                dbname=self.database,
-                user=self.user,
-                password=self.password,
-                autocommit=True,
-            )
-            try:
-                with conn.cursor() as cur:
-                    # Create sequence if it doesn't exist
+            with conn.cursor() as cur:
+                # Create sequence if it doesn't exist
+                cur.execute(
+                    "SELECT 1 FROM information_schema.sequences "
+                    "WHERE sequence_name = %s AND sequence_schema = %s",
+                    (seq_name, self.schema_name),
+                )
+                if cur.fetchone() is None:
                     cur.execute(
-                        "SELECT 1 FROM information_schema.sequences "
-                        "WHERE sequence_name = %s",
-                        (seq_name,),
+                        f'CREATE SEQUENCE IF NOT EXISTS "{seq_name}" '
+                        f"START WITH 1 INCREMENT BY 1"
                     )
-                    if cur.fetchone() is None:
-                        cur.execute(
-                            f'CREATE SEQUENCE IF NOT EXISTS "{seq_name}" '
-                            f"START WITH 1 INCREMENT BY 1"
-                        )
-                        _logger.debug(
-                            "Created sequence '%s'", seq_name,
-                        )
+                    _logger.debug(
+                        "Created sequence '%s'", seq_name,
+                    )
 
-                    # ALWAYS ensure the column DEFAULT is set — the ALTER
-                    # is idempotent and covers the case where the sequence
-                    # exists but the default was never applied.
+                # ALWAYS ensure the column DEFAULT is set — the ALTER
+                # is idempotent and covers the case where the sequence
+                # exists but the default was never applied.
+                cur.execute(
+                    "SELECT column_default "
+                    "FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = %s "
+                    "AND column_name = 'id'",
+                    (self._collection_name, self.schema_name),
+                )
+                row = cur.fetchone()
+                if row is None or row[0] is None or seq_name not in str(row[0]):
                     cur.execute(
-                        "SELECT column_default "
-                        "FROM information_schema.columns "
-                        "WHERE table_name = %s AND column_name = 'id'",
-                        (self._collection_name,),
+                        f'ALTER TABLE "{self._collection_name}" '
+                        f"ALTER COLUMN id "
+                        f"SET DEFAULT nextval('{seq_name}')"
                     )
-                    row = cur.fetchone()
-                    if row is None or row[0] is None or seq_name not in str(row[0]):
-                        cur.execute(
-                            f'ALTER TABLE "{self._collection_name}" '
-                            f"ALTER COLUMN id "
-                            f"SET DEFAULT nextval('{seq_name}')"
-                        )
-                        _logger.debug(
-                            "Set DEFAULT nextval('%s') on '%s'.id",
-                            seq_name,
-                            self._collection_name,
-                        )
-            finally:
-                conn.close()
+                    _logger.debug(
+                        "Set DEFAULT nextval('%s') on '%s'.id",
+                        seq_name,
+                        self._collection_name,
+                    )
         except Exception as e:
             _logger.warning(
                 "Failed to create auto-id sequence for '%s': %s",
                 self._collection_name,
                 e,
             )
+        finally:
+            if owns_conn and conn is not None:
+                conn.close()
 
-    def _ensure_schema_columns(self, fields: list) -> None:
+    def _ensure_schema_columns(
+        self, fields: list, conn: Optional[Any] = None
+    ) -> None:
         """Ensure all required columns exist in the collection table.
 
-        Uses ``ALTER TABLE … ADD COLUMN IF NOT EXISTS`` via a dedicated
-        psycopg connection.  This patches stale collections created by
-        older adapter versions that may be missing columns such as
-        ``ref_doc_id`` or ``id``.
+        Uses ``ALTER TABLE … ADD COLUMN`` via psycopg, checking existing
+        columns via ``information_schema.columns`` first (Vastbase does
+        not support ``ADD COLUMN IF NOT EXISTS``).  This patches stale
+        collections created by older adapter versions that may be
+        missing columns such as ``ref_doc_id``.
 
         Unlike pyvastbase's ``add_collection_field`` (which lacks the
         ``@with_executor`` decorator and fails silently), this method
         executes raw SQL directly.
+
+        Critical columns (``node_id``, ``ref_doc_id``, ``text``,
+        ``metadata_``, ``embedding``) raise ``RuntimeError`` if their
+        ADD COLUMN fails — the adapter cannot function without them.
+        Non-critical columns (e.g. ``text_search_tsv``) log a warning
+        and are skipped.
+
+        Args:
+            fields: List of ``FieldSchema`` objects defining the target schema.
+            conn: Optional open psycopg connection to reuse.  If ``None``,
+                a new connection is opened via ``_psycopg_connect()`` and
+                closed before returning.
         """
-        import psycopg
+        # Columns the adapter cannot function without
+        _CRITICAL_COLUMNS = {"node_id", "ref_doc_id", "text", "metadata_", "embedding"}
 
         # Map DataType enum → PostgreSQL type name
         type_map = {
@@ -481,15 +532,15 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             else:
                 pg_type = type_map.get(field.dtype)
                 if pg_type is None:
-                    # Unknown dtype — try to_pg_type as fallback
-                    try:
-                        pg_type = field.dtype.to_pg_type(field.dtype)
-                    except Exception:
-                        _logger.debug(
-                            "Skipping field '%s': unsupported dtype %s",
-                            field.name, field.dtype,
-                        )
-                        continue
+                    # Unknown dtype not in type_map — skip with warning.
+                    # All known dtypes are covered by type_map, so this
+                    # path is only reached for future DataType additions.
+                    _logger.warning(
+                        "Skipping field '%s': unsupported dtype %s "
+                        "(not in type_map)",
+                        field.name, field.dtype,
+                    )
+                    continue
                 if "{max_length}" in pg_type:
                     pg_type = pg_type.format(max_length=field.max_length or 256)
                 if "{dim}" in pg_type:
@@ -505,47 +556,60 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         if not alter_statements:
             return
 
+        owns_conn = conn is None
         try:
-            conn = psycopg.connect(
-                host=self.host,
-                port=self.port,
-                dbname=self.database,
-                user=self.user,
-                password=self.password,
-                autocommit=True,
-            )
-            try:
-                with conn.cursor() as cur:
-                    # Query existing columns to avoid ADD COLUMN errors
-                    cur.execute(
-                        "SELECT column_name FROM information_schema.columns "
-                        "WHERE table_name = %s",
-                        (self._collection_name,),
-                    )
-                    existing_cols = {row[0] for row in cur.fetchall()}
+            if owns_conn:
+                conn = self._psycopg_connect()
 
-                    for col_name, sql in alter_statements:
-                        if col_name in existing_cols:
-                            continue  # Column already exists — skip
-                        try:
-                            cur.execute(sql)
-                        except Exception as col_err:
-                            # Type mismatch or other DDL error — log and continue.
+            with conn.cursor() as cur:
+                # Query existing columns with table_schema filter to avoid
+                # false matches from other schemas with same table name.
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = %s AND table_schema = %s",
+                    (self._collection_name, self.schema_name),
+                )
+                existing_cols = {row[0] for row in cur.fetchall()}
+
+                for col_name, sql in alter_statements:
+                    if col_name in existing_cols:
+                        continue  # Column already exists — skip
+                    try:
+                        cur.execute(sql)
+                    except Exception as col_err:
+                        err_msg = str(col_err).lower()
+                        # "already exists" / "duplicate column" → the
+                        # column is present; treat as no-op regardless
+                        # of whether the information_schema check
+                        # caught it above.
+                        if (
+                            "already exist" in err_msg
+                            or "duplicate" in err_msg
+                        ):
                             _logger.debug(
-                                "ADD COLUMN skipped for '%s': %s",
-                                col_name, col_err,
+                                "Column '%s' already exists "
+                                "(detected via ADD COLUMN error)",
+                                col_name,
                             )
-            finally:
-                conn.close()
+                            continue
+                        if col_name in _CRITICAL_COLUMNS:
+                            raise RuntimeError(
+                                f"Failed to add critical column "
+                                f"'{col_name}' to "
+                                f"'{self._collection_name}': "
+                                f"{col_err}"
+                            ) from col_err
+                        _logger.warning(
+                            "ADD COLUMN skipped for non-critical "
+                            "column '%s': %s",
+                            col_name, col_err,
+                        )
             _logger.debug(
                 "Schema columns ensured for '%s'", self._collection_name
             )
-        except Exception as e:
-            _logger.warning(
-                "Failed to patch schema columns for '%s': %s",
-                self._collection_name,
-                e,
-            )
+        finally:
+            if owns_conn and conn is not None:
+                conn.close()
 
     def _create_hnsw_index(self) -> None:
         """Create a HNSW graph index on the embedding field.
