@@ -8,7 +8,7 @@
 - **Feature 分支**: `feature/llamaindex-vastbase-adapter`
 - **源仓库**: https://github.com/run-llama/llama_index
 - **适配仓库**: https://github.com/Loger0/LlamaIndex-vastbase.git
-- **最后更新:** 2026-06-17T08:40:00Z
+- **最后更新:** 2026-06-18T12:00:00Z
 
 ## Phase Progress
 
@@ -20,8 +20,11 @@
 | Plan-Check | code-reviewer | ✅ 通过 |
 | Convention Extraction | convention-extractor | ✅ 完成 |
 | Test Planning | test-scout | ✅ 完成 |
-| User Review | human | ⏳ pending |
-| Implementation | adapter-dev | ⏳ 待启动 |
+| User Review | human | ✅ 通过 |
+| Implementation (Wave 0) | adapter-dev | ✅ 完成 — 包脚手架 + 类骨架 + 初始化 + 数据模型 |
+| Implementation (Wave 1) | adapter-dev | ✅ 完成 — CRUD: add/delete/get_nodes/clear + 过滤器翻译 |
+| Implementation (Wave 2) | adapter-dev | ✅ 完成 — 查询引擎: DEFAULT/SPARSE/HYBRID/MMR + async |
+| Implementation (Wave 3) | adapter-dev | ✅ 完成 — 集成测试 + README + 收尾 |
 | Code Review | code-reviewer | ⏳ 待启动 |
 
 ## Key Decisions
