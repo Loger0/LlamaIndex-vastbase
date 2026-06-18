@@ -335,105 +335,69 @@ def test_hybrid_query_missing_query_str(
 
 
 # ============================================================================
-# MMR mode — Maximum Marginal Relevance (mock tests — no DB needed)
+# MMR mode — not supported (matches upstream PGVectorStore)
 # ============================================================================
 
 
-class TestMMRQuery:
-    """MMR query tests — mock-based, no DB needed.
+@pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
+def test_mmr_query_raises_value_error(vb: VastbaseVectorStore) -> None:
+    """MMR mode raises ValueError — matches upstream PGVectorStore behaviour.
 
-    These verify MMR algorithm behavior: input validation, prefetch calc,
-    and diverse selection. Adapted from upstream test_mmr_query_* tests.
+    VastbaseVectorStore does not implement MMR at the VectorStore layer.
+    Users should use LlamaIndex's VectorIndexRetriever for MMR reranking.
     """
+    q = VectorStoreQuery(
+        query_embedding=_get_sample_vector(1.0),
+        similarity_top_k=3,
+        mode=VectorStoreQueryMode.MMR,
+    )
+    with pytest.raises(ValueError, match="MMR is not supported"):
+        vb.query(q)
 
-    def test_rejects_none_embedding(self):
-        """MMR raises when query_embedding is None."""
-        query = VectorStoreQuery(
-            query_embedding=None,
-            similarity_top_k=3,
-            mode=VectorStoreQueryMode.MMR,
-        )
-        with pytest.raises(ValueError, match="MMR query requires query_embedding"):
-            if query.query_embedding is None:
-                raise ValueError("MMR query requires query_embedding to be set")
 
-    def test_rejects_conflicting_prefetch_params(self):
-        """MMR raises when both mmr_prefetch_factor and mmr_prefetch_k given."""
-        with pytest.raises(
-            ValueError,
-            match="'mmr_prefetch_factor' and 'mmr_prefetch_k' cannot coexist",
-        ):
-            mmr_prefetch_factor = 4
-            mmr_prefetch_k = 20
-            if mmr_prefetch_factor is not None and mmr_prefetch_k is not None:
-                raise ValueError(
-                    "'mmr_prefetch_factor' and 'mmr_prefetch_k' cannot coexist"
-                )
+@pytest.mark.skipif(vastbase_not_available, reason="Vastbase is not available")
+def test_mmr_aquery_raises_value_error(vb: VastbaseVectorStore) -> None:
+    """Async MMR mode raises ValueError — matches sync behaviour."""
+    import asyncio
 
-    def test_prefetch_k_override(self):
-        """mmr_prefetch_k overrides default prefetch calculation."""
-        similarity_top_k = 5
-        mmr_prefetch_k = 50
-        prefetch_k = max(similarity_top_k * 3, mmr_prefetch_k)
-        assert prefetch_k == 50
+    q = VectorStoreQuery(
+        query_embedding=_get_sample_vector(1.0),
+        similarity_top_k=3,
+        mode=VectorStoreQueryMode.MMR,
+    )
+    with pytest.raises(ValueError, match="MMR is not supported"):
+        asyncio.get_event_loop().run_until_complete(vb.aquery(q))
 
-    def test_default_prefetch_factor(self):
-        """Default prefetch uses similarity_top_k * factor."""
-        DEFAULT_MMR_PREFETCH_FACTOR = 4
-        similarity_top_k = 5
-        prefetch_k = max(
-            similarity_top_k * DEFAULT_MMR_PREFETCH_FACTOR, similarity_top_k
-        )
-        assert prefetch_k == 20
 
-    def test_custom_prefetch_factor(self):
-        """Custom mmr_prefetch_factor overrides default."""
-        similarity_top_k = 5
-        factor = 10
-        prefetch_k = max(similarity_top_k * factor, similarity_top_k)
-        assert prefetch_k == 50
+def test_mmr_diverse_selection_utility() -> None:
+    """Verify LlamaIndex's get_top_k_mmr_embeddings picks diverse results.
 
-    def test_mmr_results_diverse_selection(self):
-        """Verify MMR picks diverse results preferring relevance + novelty.
+    This tests the upstream MMR utility that users should call instead of
+    relying on VectorStore-level MMR.  Query=[1,0.5,0], node1=[1,0,0]
+    node2=[1,0.1,0] node3=[0,1,0].  node1 and node2 are near-duplicates;
+    node3 is diverse.  With threshold=0.5, MMR should pick node2 (most
+    relevant) then node3 (diverse), NOT node1 (redundant with node2).
+    """
+    from llama_index.core.indices.query.embedding_utils import (
+        get_top_k_mmr_embeddings,
+    )
 
-        Query=[1,0.5,0], node1=[1,0,0] node2=[1,0.1,0] node3=[0,1,0].
-        node1 and node2 are near-duplicates; node3 is diverse.
-        With threshold=0.5, MMR should pick node2 (most relevant) then
-        node3 (diverse), NOT node1 (redundant with node2).
-        """
-        from llama_index.core.indices.query.embedding_utils import (
-            get_top_k_mmr_embeddings,
-        )
+    query_embedding = [1.0, 0.5, 0.0]
+    embeddings = [
+        [1.0, 0.0, 0.0],  # node1 — similar to query, near-dup of node2
+        [1.0, 0.1, 0.0],  # node2 — most relevant, near-dup of node1
+        [0.0, 1.0, 0.0],  # node3 — diverse
+    ]
+    result = get_top_k_mmr_embeddings(
+        query_embedding,
+        embeddings,
+        mmr_threshold=0.5,
+        similarity_top_k=2,
+    )
+    # MMR should return 2 results
+    assert len(result) == 2
+    # The second result should be the diverse node (index 2)
+    # not the near-duplicate (index 0)
+    selected_indices = [r[1] for r in result]
+    assert 2 in selected_indices, "MMR should select the diverse node (index 2)"
 
-        query_embedding = [1.0, 0.5, 0.0]
-        embeddings = [
-            [1.0, 0.0, 0.0],  # node1 — similar to query, near-dup of node2
-            [1.0, 0.1, 0.0],  # node2 — most relevant, near-dup of node1
-            [0.0, 1.0, 0.0],  # node3 — diverse
-        ]
-        result = get_top_k_mmr_embeddings(
-            query_embedding,
-            embeddings,
-            mmr_threshold=0.5,
-            similarity_top_k=2,
-        )
-        # MMR should return 2 results
-        assert len(result) == 2
-        # The second result should be the diverse node (index 2)
-        # not the near-duplicate (index 0)
-        selected_indices = [r[1] for r in result]
-        assert 2 in selected_indices, "MMR should select the diverse node (index 2)"
-
-    def test_threshold_validation(self):
-        """MMR threshold must be in [0, 1]."""
-        # Valid thresholds
-        for valid in [0.0, 0.5, 1.0]:
-            assert 0.0 <= valid <= 1.0
-
-        # Invalid thresholds would raise ValueError
-        for invalid in [-0.1, 1.5]:
-            with pytest.raises(ValueError):
-                if invalid < 0.0 or invalid > 1.0:
-                    raise ValueError(
-                        f"mmr_threshold must be between 0 and 1, got {invalid}"
-                    )

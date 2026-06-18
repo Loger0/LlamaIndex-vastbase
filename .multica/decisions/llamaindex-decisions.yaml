@@ -45,10 +45,17 @@ decisions:
   - id: D-06
     category: "混合搜索"
     question: "混合搜索实现方式？"
-    decision: "pyvastbase 原生 hybrid_search + RRF"
-    rationale: "用户选择方案 A，使用 pyvastbase Collection.hybrid_search(RRFRanker)，语义等价且更优"
-    status: confirmed
+    decision: "手动 dense + sparse (text ILIKE) 去重合并"
+    rationale: |
+      原方案：使用 pyvastbase Collection.hybrid_search(RRFRanker)。
+      实施时发现 hybrid_search 需要多个向量字段（dense + sparse vector），但
+      LlamaIndex VectorStore schema 只有一个 dense embedding 字段，"sparse" 组件
+      实际是 text ILIKE 关键词匹配而非 sparse vector search。因此 hybrid_search API
+      不适用于此 schema。改为手动 dense search + text ILIKE query + Python 去重合并，
+      与上游 PGVectorStore 的 hybrid search 行为一致（dense-first, unseen sparse append）。
+    status: overridden
     confirmed_by: "user"
+    override_reason: "schema 不兼容 — hybrid_search 需要 sparse vector 字段，LlamaIndex 仅有 dense vector + text"
 
   - id: D-07
     category: "文件结构"

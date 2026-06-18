@@ -148,9 +148,6 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     _is_initialized: bool = PrivateAttr(default=False)
     _async_initialized: bool = PrivateAttr(default=False)
     _collection_name: str = PrivateAttr(default=None)
-    # TODO(Wave 2): integrate _customize_search_fn into query()/aquery()
-    # Currently stored but never called. Should allow users to inject custom
-    # search parameter overrides (e.g. ef_search, reranking) before search().
     _customize_search_fn: Optional[Callable] = PrivateAttr(default=None)
 
     # ------------------------------------------------------------------
@@ -501,25 +498,11 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         return _ImmediateAwaitable()
 
     async def aclose(self) -> None:
-        """Async close for use with AsyncCollection."""
-        if self._async_collection is not None:
-            try:
-                if hasattr(self._async_collection, "close"):
-                    await self._async_collection.close()
-            except Exception as e:
-                _logger.warning("Error closing async collection: %s", e)
-            self._async_collection = None
-        if self._client is not None:
-            try:
-                self._client.close()
-            except Exception as e:
-                _logger.warning("Error closing Vastbase client: %s", e)
-            self._client = None
-        self._is_initialized = False
-        self._async_initialized = False
+        """Alias for :meth:`close` — provided for explicit async naming.
 
-    async def aclose(self) -> None:
-        """Alias for :meth:`close` — provided for explicit async naming."""
+        Delegates to ``close()`` which cleans up both the sync
+        ``VastbaseClient`` and the async collection.
+        """
         await self.close()
 
     # ------------------------------------------------------------------
@@ -552,54 +535,6 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             "metadata_": json.dumps(metadata, ensure_ascii=False),
             "embedding": embedding,
         }
-
-    def _db_rows_to_query_result(
-        self, rows: List[Dict[str, Any]]
-    ) -> VectorStoreQueryResult:
-        """Convert raw DB row dicts into a LlamaIndex VectorStoreQueryResult.
-
-        Used by the query engine (Wave 2) to transform pyvastbase search
-        results into the standard LlamaIndex result format.
-        """
-        nodes: List[BaseNode] = []
-        ids: List[str] = []
-        scores: List[float] = []
-
-        for row in rows:
-            node = TextNode(
-                id_=row.get("node_id", ""),
-                text=row.get("text", ""),
-                embedding=row.get("embedding"),
-            )
-            # Restore metadata from the metadata_ JSON field
-            raw_metadata = row.get("metadata_", {}) or {}
-            if isinstance(raw_metadata, str):
-                try:
-                    raw_metadata = json.loads(raw_metadata)
-                except (json.JSONDecodeError, TypeError):
-                    raw_metadata = {}
-            if "_node_type" in raw_metadata:
-                raw_metadata.pop("_node_type")
-            if "_node_content" in raw_metadata:
-                raw_metadata.pop("_node_content")  # TODO(Wave 2): parse and merge node_content
-            node.metadata = {
-                k: v
-                for k, v in raw_metadata.items()
-                if k not in ("_node_type", "_node_content")
-            }
-
-            nodes.append(node)
-            ids.append(row.get("node_id", ""))
-
-            score = row.get("score") or row.get("distance")
-            if score is not None:
-                scores.append(float(score))
-
-        return VectorStoreQueryResult(
-            nodes=nodes,
-            ids=ids,
-            similarities=scores if scores else None,
-        )
 
     # ------------------------------------------------------------------
     # Filter translation
@@ -1114,8 +1049,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         await col.truncate()
 
     # ------------------------------------------------------------------
-    # Query — DEFAULT mode (basic vector search for Wave 1)
-    # Full SPARSE / HYBRID / MMR modes implemented in Wave 2.
+    # Query — Four-mode dispatcher (DEFAULT / SPARSE / HYBRID / MMR)
     # ------------------------------------------------------------------
 
     def query(
@@ -1123,8 +1057,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     ) -> VectorStoreQueryResult:
         """Query the vector store.
 
-        Wave 1 implements DEFAULT mode.  SPARSE / HYBRID / MMR modes
-        will be fully implemented in Wave 2.
+        Dispatches to the appropriate query method based on mode:
+
+        - **DEFAULT**: cosine similarity vector search via ``client.search()``
+        - **SPARSE / TEXT_SEARCH**: ILIKE text search with client-side word-boundary scoring
+        - **HYBRID**: dense vector + sparse text search, merged with deduplication
+        - **MMR**: not supported — raises ``ValueError`` (matches upstream PGVectorStore)
         """
         self._initialize()
 
@@ -1291,14 +1229,13 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             rows = self._apply_client_filters(rows, client_filters)
 
         # Score by word boundary match count and sort descending
-        import re as _re
 
         def _word_score(text: str) -> float:
             t = text.lower()
             hits = sum(
                 1
                 for kw in keywords
-                if _re.search(r"\b" + _re.escape(kw.lower()) + r"\b", t)
+                if re.search(r"\b" + re.escape(kw.lower()) + r"\b", t)
             )
             return hits / len(keywords) if keywords else 0.0
 
