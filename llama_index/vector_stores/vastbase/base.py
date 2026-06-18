@@ -7,8 +7,7 @@ All vector operations use pyvastbase exclusively — no raw SQL.
 """
 
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from llama_index.core.bridge.pydantic import PrivateAttr
@@ -109,12 +108,15 @@ class VastbaseVectorStore(BasePydanticVectorStore):
     # ------------------------------------------------------------------
 
     def __init__(self, **kwargs: Any) -> None:
+        # Pop non-Pydantic fields BEFORE super().__init__() to prevent
+        # Pydantic validation errors for unknown fields.
+        customize_search_fn = kwargs.pop("customize_search_fn", None)
         super().__init__(**kwargs)
         self._client = None
         self._async_collection = None
         self._is_initialized = False
         self._collection_name = f"data_{self.table_name}"
-        self._customize_search_fn = kwargs.pop("customize_search_fn", None)
+        self._customize_search_fn = customize_search_fn
 
     @classmethod
     def from_params(
@@ -222,8 +224,13 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         """
         assert self._client is not None
 
-        if self._client.has_collection(self._collection_name):
-            return
+        try:
+            if self._client.has_collection(self._collection_name):
+                return
+        except Exception as e:
+            # pyvastbase 0.2.7 has_collection has known edge cases;
+            # fall through to create_collection which handles "already exists".
+            _logger.debug("has_collection check failed (%s); attempting create", e)
 
         vector_dtype = (
             DataType.FLOAT16_VECTOR if self.use_halfvec else DataType.FLOAT_VECTOR
@@ -250,7 +257,16 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
 
         schema = CollectionSchema(name=self._collection_name, fields=fields)
-        self._client.create_collection(self._collection_name, schema=schema)
+        try:
+            self._client.create_collection(self._collection_name, schema=schema)
+        except Exception as e:
+            err_lower = str(e).lower()
+            if "already exist" not in err_lower and "duplicate" not in err_lower:
+                raise
+            _logger.debug(
+                "Collection '%s' already exists; skipping creation",
+                self._collection_name,
+            )
 
     def _create_hnsw_index(self) -> None:
         """Create a HNSW graph index on the embedding field.
