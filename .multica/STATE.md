@@ -8,17 +8,18 @@
 - **Feature 分支**: `feature/llamaindex-vastbase-adapter`
 - **源仓库**: https://github.com/run-llama/llama_index
 - **适配仓库**: https://github.com/Loger0/LlamaIndex-vastbase.git
+- **最后更新:** 2026-06-17T08:40:00Z
 
 ## Phase Progress
 
 | Phase | Agent | Status |
 |-------|-------|--------|
 | Framework Diagnostics | framework-profiler | ✅ 完成 |
-| Requirement Analysis | requirement-analyst | ✅ 完成 |
-| Design / Spec + Plan | requirement-analyst | ✅ 完成 |
-| Plan-Check | code-reviewer | ✅ 通过 |
-| User Review | human | ✅ 通过 |
+| Requirement Analysis | eco-issue-analyst | ✅ 完成 |
+| Design / Spec + Plan | eco-issue-analyst | ✅ 完成 |
+| Plan-Check | code-reviewer | 🔄 进行中 |
 | Convention Extraction | convention-extractor | ✅ 完成 |
+| User Review | human | ⏳ pending |
 | Test Planning | test-planner | ⏳ 待启动 |
 | Implementation | adapter-dev | ⏳ 待启动 |
 | Code Review | code-reviewer | ⏳ 待启动 |
@@ -37,8 +38,10 @@
 | 文件 | 描述 |
 |------|------|
 | `.multica/profiles/llamaindex-profile.json` | LlamaIndex 框架诊断 Profile |
-| `.multica/decisions/llamaindex-decisions.yaml` | 开放技术决策记录 |
+| `.multica/decisions/llamaindex-decisions.yaml` | 开放技术决策记录（7 条） |
 | `.multica/conventions/llamaindex-conventions.yaml` | LlamaIndex 编码规范 |
+| `.multica/specs/llamaindex-spec.md` | 需求规格文档（12 章节） |
+| `.multica/plans/llamaindex-plan.md` | 实施计划（9 Tasks TDD） |
 | `.multica/STATE.md` | 本文件 — 项目状态追踪 |
 
 ## 诊断摘要
@@ -49,3 +52,11 @@
 - **参考实现**: PGVectorStore (1698 行, SQLAlchemy + pgvector)
 - **测试基础设施**: full（3222 行完整测试套件）
 - **开放决策**: 7 条（已确认）
+
+## Spec 自查结果
+
+- ✅ 占位符扫描 — 无 TBD/TODO/不完整段落
+- ✅ 内部一致性 — pyvastbase API 映射前后无矛盾
+- ✅ 范围检查 — 聚焦 4 种查询模式，边界清晰
+- ✅ 歧义检查 — 每条需求只有一种理解
+- ✅ Decision Coverage — D-01 至 D-07 全部在 Spec 中落实
