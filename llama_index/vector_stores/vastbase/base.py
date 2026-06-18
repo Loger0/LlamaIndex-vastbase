@@ -15,7 +15,11 @@ from llama_index.core.bridge.pydantic import PrivateAttr
 from llama_index.core.schema import BaseNode, TextNode
 from llama_index.core.vector_stores.types import (
     BasePydanticVectorStore,
+    FilterCondition,
+    FilterOperator,
+    MetadataFilters,
     VectorStoreQuery,
+    VectorStoreQueryMode,
     VectorStoreQueryResult,
 )
 from llama_index.core.vector_stores.utils import node_to_metadata_dict
@@ -264,14 +268,27 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
 
         schema = CollectionSchema(name=self._collection_name, fields=fields)
+        required_field_names = {f.name for f in fields}
         try:
             self._client.create_collection(self._collection_name, schema=schema)
         except Exception as e:
             err_lower = str(e).lower()
             if "already exist" not in err_lower and "duplicate" not in err_lower:
                 raise
+            # Collection already exists — ensure required fields are present.
+            # A stale collection from a previous run may have an older schema
+            # (e.g. missing ref_doc_id).  Use add_collection_field to patch.
+            for field in fields:
+                if field.name == "id":
+                    continue  # skip primary key
+                try:
+                    self._client.add_collection_field(
+                        self._collection_name, field.name, field.dtype
+                    )
+                except Exception:
+                    pass  # field already exists or unsupported — ignore
             _logger.debug(
-                "Collection '%s' already exists; skipping creation",
+                "Collection '%s' already exists; schema patched",
                 self._collection_name,
             )
 
@@ -355,7 +372,7 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             "node_id": node.node_id,
             "ref_doc_id": ref_doc_id,
             "text": node.get_content(metadata_mode="none") or "",
-            "metadata_": metadata,
+            "metadata_": json.dumps(metadata, ensure_ascii=False),
             "embedding": embedding,
         }
 
@@ -379,6 +396,11 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             )
             # Restore metadata from the metadata_ JSON field
             raw_metadata = row.get("metadata_", {}) or {}
+            if isinstance(raw_metadata, str):
+                try:
+                    raw_metadata = json.loads(raw_metadata)
+                except (json.JSONDecodeError, TypeError):
+                    raw_metadata = {}
             if "_node_type" in raw_metadata:
                 raw_metadata.pop("_node_type")
             if "_node_content" in raw_metadata:
@@ -403,24 +425,315 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         )
 
     # ------------------------------------------------------------------
-    # CRUD stubs — implemented in Wave 1
+    # Filter translation
+    # ------------------------------------------------------------------
+
+    # Operators that require client-side filtering (PG JSONB array
+    # operators ?|, ?&, @> are not reliably supported through pyvastbase
+    # expr strings due to '?' conflicting with parameter placeholders).
+    _CLIENT_SIDE_OPERATORS = {
+        FilterOperator.ANY,
+        FilterOperator.ALL,
+        FilterOperator.CONTAINS,
+    }
+
+    def _build_filter_clause(
+        self, filters: Optional[MetadataFilters]
+    ) -> tuple:
+        """Convert LlamaIndex MetadataFilters to pyvastbase expr + client filters.
+
+        Returns:
+            A tuple ``(expr_string_or_None, client_filters_or_None)``.
+            *expr_string* contains only operators that can be pushed
+            down to the database.  *client_filters* is a MetadataFilters
+            object (or ``None``) for operators that must be evaluated in
+            Python after retrieval.
+        """
+        if filters is None or not filters.filters:
+            return None, None
+
+        db_clauses: List[str] = []
+        client_filters: List[Any] = []
+
+        for f in filters.filters:
+            if isinstance(f, MetadataFilters):
+                # Nested group — recurse
+                sub_expr, sub_client = self._build_filter_clause(f)
+                if sub_expr:
+                    db_clauses.append(f"({sub_expr})")
+                if sub_client:
+                    client_filters.append(sub_client)
+            else:
+                op = getattr(f, "operator", None)
+                if op in self._CLIENT_SIDE_OPERATORS:
+                    client_filters.append(f)
+                else:
+                    clause = self._build_single_filter_clause(f)
+                    if clause:
+                        db_clauses.append(clause)
+
+        # Build DB expression
+        condition = getattr(filters, "condition", None)
+        is_or = condition == FilterCondition.OR
+        joiner = " OR " if is_or else " AND "
+
+        db_expr: Optional[str] = None
+        if db_clauses:
+            db_expr = joiner.join(db_clauses)
+            if len(db_clauses) > 1:
+                db_expr = f"({db_expr})"
+
+        # Build client-side MetadataFilters
+        client_mf: Optional[MetadataFilters] = None
+        if client_filters:
+            client_mf = MetadataFilters(
+                filters=client_filters,
+                condition=condition or FilterCondition.AND,
+            )
+
+        return db_expr, client_mf
+
+    def _build_single_filter_clause(self, f: Any) -> Optional[str]:
+        """Build an expr fragment for a single MetadataFilter.
+
+        All metadata is stored in a single JSONB column ``metadata_``,
+        so every filter accesses ``metadata_->>'<key>'``.
+        """
+        key = f.key
+        value = f.value
+        op = f.operator
+        field = f"metadata_->>'{key}'"
+
+        # --- IS_EMPTY ---
+        if op == FilterOperator.IS_EMPTY:
+            return f"{field} IS NULL"
+
+        # --- IN / NIN ---
+        if op in (FilterOperator.IN, FilterOperator.NIN):
+            values = value if isinstance(value, (list, tuple)) else [value]
+            vals_str = ", ".join(f"'{v}'" for v in values)
+            kw = "IN" if op == FilterOperator.IN else "NOT IN"
+            return f"{field} {kw} ({vals_str})"
+
+        # --- TEXT_MATCH / TEXT_MATCH_INSENSITIVE ---
+        if op in (FilterOperator.TEXT_MATCH, FilterOperator.TEXT_MATCH_INSENSITIVE):
+            return f"{field} ILIKE '%{value}%'"
+
+        # --- String equality / inequality ---
+        if op == FilterOperator.EQ:
+            return f"{field} = '{value}'"
+        if op == FilterOperator.NE:
+            return f"{field} != '{value}'"
+
+        # --- Numeric comparisons (cast to float) ---
+        numeric_ops = {
+            FilterOperator.GT: ">",
+            FilterOperator.LT: "<",
+            FilterOperator.GTE: ">=",
+            FilterOperator.LTE: "<=",
+        }
+        if op in numeric_ops:
+            numeric_field = f"({field})::float"
+            return f"{numeric_field} {numeric_ops[op]} {value}"
+
+        # Fallback: treat as string equality
+        _logger.warning("Unknown filter operator %s; falling back to EQ", op)
+        return f"{field} = '{value}'"
+
+    # ------------------------------------------------------------------
+    # Client-side filter matching (ANY / ALL / CONTAINS)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _row_matches_filter(row_meta: Dict[str, Any], f: Any) -> bool:
+        """Check whether a row's metadata dict satisfies a MetadataFilter.
+
+        Used for operators that cannot be pushed to the database
+        (ANY, ALL, CONTAINS).
+        """
+        key = f.key
+        value = f.value
+        op = f.operator
+        meta_val = row_meta.get(key)
+
+        if op == FilterOperator.CONTAINS:
+            if isinstance(meta_val, list):
+                return value in meta_val
+            if isinstance(meta_val, str):
+                return value in meta_val
+            return False
+
+        if op == FilterOperator.ANY:
+            if not isinstance(meta_val, list):
+                return False
+            check_values = value if isinstance(value, (list, tuple)) else [value]
+            return any(v in meta_val for v in check_values)
+
+        if op == FilterOperator.ALL:
+            if not isinstance(meta_val, list):
+                return False
+            check_values = value if isinstance(value, (list, tuple)) else [value]
+            return all(v in meta_val for v in check_values)
+
+        return False
+
+    def _apply_client_filters(
+        self,
+        rows: List[Dict[str, Any]],
+        client_filters: Optional[MetadataFilters],
+    ) -> List[Dict[str, Any]]:
+        """Filter a list of row dicts in Python using client-side operators."""
+        if client_filters is None:
+            return rows
+
+        result = []
+        for row in rows:
+            row_meta = row.get("metadata_", {}) or {}
+            if isinstance(row_meta, str):
+                try:
+                    row_meta = json.loads(row_meta)
+                except (json.JSONDecodeError, TypeError):
+                    row_meta = {}
+            match = self._eval_client_filters(row_meta, client_filters)
+            if match:
+                result.append(row)
+        return result
+
+    def _eval_client_filters(
+        self, meta: Dict[str, Any], filters: MetadataFilters
+    ) -> bool:
+        """Evaluate nested client-side MetadataFilters against a metadata dict."""
+        condition = getattr(filters, "condition", None)
+        is_or = condition == FilterCondition.OR
+        results: List[bool] = []
+
+        for f in filters.filters:
+            if isinstance(f, MetadataFilters):
+                results.append(self._eval_client_filters(meta, f))
+            else:
+                results.append(self._row_matches_filter(meta, f))
+
+        if not results:
+            return True  # no filters → match
+        if is_or:
+            return any(results)
+        return all(results)
+
+    # ------------------------------------------------------------------
+    # Row → Node conversion helper
+    # ------------------------------------------------------------------
+
+    def _row_dict_to_node(self, row: Dict[str, Any]) -> BaseNode:
+        """Convert a raw DB row dict to a LlamaIndex BaseNode.
+
+        Handles metadata deserialization: if ``_node_content`` is present
+        in the stored JSON, use ``metadata_dict_to_node`` for full fidelity;
+        otherwise fall back to simple TextNode construction.
+        """
+        raw_metadata = row.get("metadata_", {}) or {}
+        # metadata_ may come back as a JSON string from Vastbase
+        if isinstance(raw_metadata, str):
+            try:
+                raw_metadata = json.loads(raw_metadata)
+            except (json.JSONDecodeError, TypeError):
+                raw_metadata = {}
+
+        # Attempt full deserialization when _node_content is available
+        if "_node_content" in raw_metadata:
+            try:
+                from llama_index.core.vector_stores.utils import (
+                    metadata_dict_to_node,
+                )
+                return metadata_dict_to_node(raw_metadata, row.get("text", ""))
+            except Exception:
+                pass  # fall through to simple construction
+
+        # Simple construction — strip internal keys
+        node = TextNode(
+            id_=row.get("node_id", ""),
+            text=row.get("text", ""),
+            embedding=row.get("embedding"),
+        )
+        node.metadata = {
+            k: v
+            for k, v in raw_metadata.items()
+            if k not in ("_node_type", "_node_content")
+        }
+        return node
+
+    # ------------------------------------------------------------------
+    # CRUD — add
     # ------------------------------------------------------------------
 
     def add(self, nodes: Sequence[BaseNode], **add_kwargs: Any) -> List[str]:
-        raise NotImplementedError("Wave 1: VastbaseVectorStore.add not yet implemented")
+        """Insert nodes into the Vastbase collection.
 
-    async def async_add(self, nodes: Sequence[BaseNode], **kwargs: Any) -> List[str]:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.async_add not yet implemented"
-        )
+        Returns:
+            The list of node IDs that were inserted.
+        """
+        self._initialize()
+        if not nodes:
+            return []
+
+        fail_on_error = add_kwargs.get("fail_on_error", True)
+        rows = [self._node_to_row_dict(n) for n in nodes]
+
+        try:
+            self._client.insert(self._collection_name, rows)
+        except Exception as e:
+            if fail_on_error:
+                raise
+            _logger.warning("add() insert failed: %s", e)
+            return []
+
+        return [n.node_id for n in nodes]
+
+    async def async_add(
+        self, nodes: Sequence[BaseNode], **kwargs: Any
+    ) -> List[str]:
+        """Async version of ``add()``."""
+        self._initialize()
+        if not nodes:
+            return []
+
+        from pyvastbase import AsyncCollection
+
+        fail_on_error = kwargs.get("fail_on_error", True)
+        rows = [self._node_to_row_dict(n) for n in nodes]
+
+        try:
+            async with AsyncCollection(self._collection_name) as col:
+                await col.insert(rows)
+        except Exception as e:
+            if fail_on_error:
+                raise
+            _logger.warning("async_add() insert failed: %s", e)
+            return []
+
+        return [n.node_id for n in nodes]
+
+    # ------------------------------------------------------------------
+    # CRUD — delete (by ref_doc_id)
+    # ------------------------------------------------------------------
 
     def delete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
-        raise NotImplementedError("Wave 1: VastbaseVectorStore.delete not yet implemented")
+        """Delete all rows whose ``ref_doc_id`` matches."""
+        self._initialize()
+        expr = f"ref_doc_id = '{ref_doc_id}'"
+        self._client.delete(self._collection_name, expr=expr)
 
     async def adelete(self, ref_doc_id: str, **delete_kwargs: Any) -> None:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.adelete not yet implemented"
-        )
+        """Async version of ``delete()``."""
+        self._initialize()
+        from pyvastbase import AsyncCollection
+
+        expr = f"ref_doc_id = '{ref_doc_id}'"
+        async with AsyncCollection(self._collection_name) as col:
+            await col.delete(expr=expr)
+
+    # ------------------------------------------------------------------
+    # CRUD — delete_nodes
+    # ------------------------------------------------------------------
 
     def delete_nodes(
         self,
@@ -428,9 +741,45 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         filters: Optional[Any] = None,
         **delete_kwargs: Any,
     ) -> None:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.delete_nodes not yet implemented"
-        )
+        """Delete nodes by node_ids and/or metadata filters."""
+        self._initialize()
+        if not node_ids and filters is None:
+            return
+
+        expr_parts: List[str] = []
+        client_filters = None
+
+        if node_ids:
+            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            expr_parts.append(f"node_id IN ({ids_str})")
+
+        if filters is not None:
+            db_expr, client_filters = self._build_filter_clause(filters)
+            if db_expr:
+                expr_parts.append(db_expr)
+
+        if not expr_parts:
+            return
+
+        expr = " AND ".join(expr_parts)
+
+        if client_filters:
+            # Some filters cannot be pushed to DB — fetch then delete
+            output_fields = ["node_id", "metadata_"]
+            rows = self._client.query(
+                self._collection_name,
+                expr=expr,
+                output_fields=output_fields,
+            )
+            matched = self._apply_client_filters(rows, client_filters)
+            if matched:
+                matched_ids = ", ".join(f"'{r['node_id']}'" for r in matched)
+                self._client.delete(
+                    self._collection_name,
+                    expr=f"node_id IN ({matched_ids})",
+                )
+        else:
+            self._client.delete(self._collection_name, expr=expr)
 
     async def adelete_nodes(
         self,
@@ -438,50 +787,316 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         filters: Optional[Any] = None,
         **delete_kwargs: Any,
     ) -> None:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.adelete_nodes not yet implemented"
-        )
+        """Async version of ``delete_nodes()``."""
+        self._initialize()
+        if not node_ids and filters is None:
+            return
 
-    def clear(self) -> None:
-        raise NotImplementedError("Wave 1: VastbaseVectorStore.clear not yet implemented")
+        from pyvastbase import AsyncCollection
 
-    async def aclear(self) -> None:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.aclear not yet implemented"
-        )
+        expr_parts: List[str] = []
+        client_filters = None
+
+        if node_ids:
+            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            expr_parts.append(f"node_id IN ({ids_str})")
+
+        if filters is not None:
+            db_expr, client_filters = self._build_filter_clause(filters)
+            if db_expr:
+                expr_parts.append(db_expr)
+
+        if not expr_parts:
+            return
+
+        expr = " AND ".join(expr_parts)
+
+        async with AsyncCollection(self._collection_name) as col:
+            if client_filters:
+                rows = await col.query(
+                    expr=expr, output_fields=["node_id", "metadata_"]
+                )
+                matched = self._apply_client_filters(rows, client_filters)
+                if matched:
+                    matched_ids = ", ".join(
+                        f"'{r['node_id']}'" for r in matched
+                    )
+                    await col.delete(expr=f"node_id IN ({matched_ids})")
+            else:
+                await col.delete(expr=expr)
+
+    # ------------------------------------------------------------------
+    # CRUD — get_nodes
+    # ------------------------------------------------------------------
 
     def get_nodes(
         self,
         node_ids: Optional[List[str]] = None,
         filters: Optional[Any] = None,
     ) -> List[BaseNode]:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.get_nodes not yet implemented"
+        """Retrieve nodes by node_ids and/or metadata filters."""
+        self._initialize()
+        if not node_ids and filters is None:
+            return []
+
+        expr_parts: List[str] = []
+        client_filters = None
+
+        if node_ids:
+            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            expr_parts.append(f"node_id IN ({ids_str})")
+
+        if filters is not None:
+            db_expr, client_filters = self._build_filter_clause(filters)
+            if db_expr:
+                expr_parts.append(db_expr)
+
+        expr = " AND ".join(expr_parts) if expr_parts else None
+
+        rows = self._client.query(
+            self._collection_name,
+            expr=expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
         )
+
+        # Apply client-side filters
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+
+        return [self._row_dict_to_node(r) for r in rows]
 
     async def aget_nodes(
         self,
         node_ids: Optional[List[str]] = None,
         filters: Optional[Any] = None,
     ) -> List[BaseNode]:
-        raise NotImplementedError(
-            "Wave 1: VastbaseVectorStore.aget_nodes not yet implemented"
+        """Async version of ``get_nodes()``."""
+        self._initialize()
+        if not node_ids and filters is None:
+            return []
+
+        from pyvastbase import AsyncCollection
+
+        expr_parts: List[str] = []
+        client_filters = None
+
+        if node_ids:
+            ids_str = ", ".join(f"'{nid}'" for nid in node_ids)
+            expr_parts.append(f"node_id IN ({ids_str})")
+
+        if filters is not None:
+            db_expr, client_filters = self._build_filter_clause(filters)
+            if db_expr:
+                expr_parts.append(db_expr)
+
+        expr = " AND ".join(expr_parts) if expr_parts else None
+
+        async with AsyncCollection(self._collection_name) as col:
+            rows = await col.query(
+                expr=expr,
+                output_fields=["node_id", "text", "metadata_", "embedding"],
+            )
+
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+
+        return [self._row_dict_to_node(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # CRUD — clear
+    # ------------------------------------------------------------------
+
+    def clear(self) -> None:
+        """Remove all rows from the collection."""
+        self._initialize()
+        self._client.truncate_collection(self._collection_name)
+
+    async def aclear(self) -> None:
+        """Async version of ``clear()``."""
+        self._initialize()
+        from pyvastbase import AsyncCollection
+
+        async with AsyncCollection(self._collection_name) as col:
+            await col.truncate()
+
+    # ------------------------------------------------------------------
+    # Query — DEFAULT mode (basic vector search for Wave 1)
+    # Full SPARSE / HYBRID / MMR modes implemented in Wave 2.
+    # ------------------------------------------------------------------
+
+    def query(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Query the vector store.
+
+        Wave 1 implements DEFAULT mode.  SPARSE / HYBRID / MMR modes
+        will be fully implemented in Wave 2.
+        """
+        self._initialize()
+
+        mode = query.mode
+
+        if mode == VectorStoreQueryMode.DEFAULT:
+            return self._query_default(query, **kwargs)
+        elif mode == VectorStoreQueryMode.MMR:
+            raise ValueError(
+                "MMR is not supported in VastbaseVectorStore. "
+                "Use LlamaIndex's VectorIndexRetriever for MMR reranking."
+            )
+        else:
+            raise NotImplementedError(
+                f"Wave 2: query mode {mode} not yet implemented"
+            )
+
+    def _query_default(
+        self, query: VectorStoreQuery, **kwargs: Any
+    ) -> VectorStoreQueryResult:
+        """Execute DEFAULT mode vector similarity search."""
+        if query.query_embedding is None:
+            raise ValueError("query_embedding is required for DEFAULT mode")
+
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+
+        ef_search = kwargs.get(
+            "hnsw_ef_search",
+            (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
         )
 
-    # ------------------------------------------------------------------
-    # Query stubs — implemented in Wave 2
-    # ------------------------------------------------------------------
+        results = self._client.search(
+            self._collection_name,
+            data=[query.query_embedding],
+            anns_field="embedding",
+            param={"metric_type": "cosine", "ef": int(ef_search)},
+            limit=query.similarity_top_k,
+            expr=db_expr,
+            output_fields=["node_id", "text", "metadata_", "embedding"],
+        )
 
-    def query(self, query: VectorStoreQuery, **kwargs: Any) -> VectorStoreQueryResult:
-        raise NotImplementedError(
-            "Wave 2: VastbaseVectorStore.query not yet implemented"
+        # Build row dicts from search results
+        rows: List[Dict[str, Any]] = []
+        distances: List[float] = []
+
+        hits = results[0] if results else []
+        for hit in hits:
+            row: Dict[str, Any] = {}
+            if hasattr(hit, "data") and isinstance(hit.data, dict):
+                row = dict(hit.data)
+            elif isinstance(hit, dict):
+                row = dict(hit)
+
+            # Ensure node_id is set
+            if "node_id" not in row:
+                row["node_id"] = str(getattr(hit, "id", ""))
+
+            # Get distance
+            dist = getattr(hit, "distance", None)
+            if dist is not None:
+                distances.append(float(dist))
+
+            rows.append(row)
+
+        # Apply client-side filters
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+            # Adjust distances to match filtered rows
+            # (approximate — exact distance mapping is lost after filtering)
+
+        # Convert to nodes
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for i, row in enumerate(rows):
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            if i < len(distances):
+                similarities.append(1.0 - distances[i])
+
+        return VectorStoreQueryResult(
+            nodes=nodes,
+            ids=ids,
+            similarities=similarities if similarities else None,
         )
 
     async def aquery(
         self, query: VectorStoreQuery, **kwargs: Any
     ) -> VectorStoreQueryResult:
-        raise NotImplementedError(
-            "Wave 2: VastbaseVectorStore.aquery not yet implemented"
+        """Async version of ``query()``.
+
+        Wave 1 implements DEFAULT mode only.
+        """
+        self._initialize()
+
+        mode = query.mode
+
+        if mode == VectorStoreQueryMode.MMR:
+            raise ValueError(
+                "MMR is not supported in VastbaseVectorStore. "
+                "Use LlamaIndex's VectorIndexRetriever for MMR reranking."
+            )
+
+        if mode != VectorStoreQueryMode.DEFAULT:
+            raise NotImplementedError(
+                f"Wave 2: async query mode {mode} not yet implemented"
+            )
+
+        from pyvastbase import AsyncCollection
+
+        if query.query_embedding is None:
+            raise ValueError("query_embedding is required for DEFAULT mode")
+
+        db_expr, client_filters = self._build_filter_clause(query.filters)
+        ef_search = kwargs.get(
+            "hnsw_ef_search",
+            (self.hnsw_kwargs or {}).get("hnsw_ef_search", 100),
+        )
+
+        async with AsyncCollection(self._collection_name) as col:
+            results = await col.search(
+                data=[query.query_embedding],
+                anns_field="embedding",
+                param={"metric_type": "cosine", "ef": int(ef_search)},
+                limit=query.similarity_top_k,
+                expr=db_expr,
+                output_fields=["node_id", "text", "metadata_", "embedding"],
+            )
+
+        rows: List[Dict[str, Any]] = []
+        distances: List[float] = []
+
+        hits = results[0] if results else []
+        for hit in hits:
+            row: Dict[str, Any] = {}
+            if hasattr(hit, "data") and isinstance(hit.data, dict):
+                row = dict(hit.data)
+            elif isinstance(hit, dict):
+                row = dict(hit)
+            if "node_id" not in row:
+                row["node_id"] = str(getattr(hit, "id", ""))
+            dist = getattr(hit, "distance", None)
+            if dist is not None:
+                distances.append(float(dist))
+            rows.append(row)
+
+        if client_filters:
+            rows = self._apply_client_filters(rows, client_filters)
+
+        nodes: List[BaseNode] = []
+        ids: List[str] = []
+        similarities: List[float] = []
+
+        for i, row in enumerate(rows):
+            node = self._row_dict_to_node(row)
+            nodes.append(node)
+            ids.append(row.get("node_id", ""))
+            if i < len(distances):
+                similarities.append(1.0 - distances[i])
+
+        return VectorStoreQueryResult(
+            nodes=nodes,
+            ids=ids,
+            similarities=similarities if similarities else None,
         )
 
     # ------------------------------------------------------------------
