@@ -293,30 +293,12 @@ class VastbaseVectorStore(BasePydanticVectorStore):
                 raise
             _logger.warning("Async connection initialization failed: %s", e)
 
-    def _create_collection_if_not_exists(self) -> None:
-        """Create the Vastbase collection with the required schema.
+    def _build_schema_fields(self) -> list:
+        """Build the list of FieldSchema for the collection.
 
-        Schema fields:
-        - id         : INT64 primary key (auto-generated)
-        - node_id    : VARCHAR(256) — LlamaIndex node identifier
-        - ref_doc_id : VARCHAR(256) — source document identifier
-        - text       : TEXT — original text content
-        - metadata_  : JSON — node metadata (JSONB-compatible)
-        - embedding  : FLOAT_VECTOR(embed_dim) or FLOAT16_VECTOR(embed_dim)
+        Returns the canonical schema definition so both the create path
+        and the patch path use the same field list.
         """
-        assert self._client is not None
-
-        try:
-            if self._client.has_collection(self._collection_name):
-                # Collection exists — still ensure the auto-id sequence
-                # (pyvastbase never generates SERIAL/IDENTITY DDL).
-                self._ensure_auto_id_sequence()
-                return
-        except Exception as e:
-            # pyvastbase 0.2.7 has_collection has known edge cases;
-            # fall through to create_collection which handles "already exists".
-            _logger.debug("has_collection check failed (%s); attempting create", e)
-
         vector_dtype = (
             DataType.FLOAT16_VECTOR if self.use_halfvec else DataType.FLOAT_VECTOR
         )
@@ -334,38 +316,68 @@ class VastbaseVectorStore(BasePydanticVectorStore):
             ),
         ]
 
-        # When hybrid_search is enabled, add a text-search column for
-        # PG-compatible full-text search (to_tsvector / to_tsquery).
         if self.hybrid_search:
             fields.append(
                 FieldSchema(name="text_search_tsv", dtype=DataType.TEXT)
             )
 
+        return fields
+
+    def _create_collection_if_not_exists(self) -> None:
+        """Create the Vastbase collection with the required schema.
+
+        Schema fields:
+        - id         : INT64 primary key (auto-generated)
+        - node_id    : VARCHAR(256) — LlamaIndex node identifier
+        - ref_doc_id : VARCHAR(256) — source document identifier
+        - text       : TEXT — original text content
+        - metadata_  : JSON — node metadata (JSONB-compatible)
+        - embedding  : FLOAT_VECTOR(embed_dim) or FLOAT16_VECTOR(embed_dim)
+
+        When the collection already exists, missing columns are patched
+        via ALTER TABLE ADD COLUMN IF NOT EXISTS.  This handles stale
+        collections created by older adapter versions that lacked
+        columns such as ``ref_doc_id``.
+
+        Note: pyvastbase's ``has_collection`` may fail with an API
+        mismatch, and ``CREATE TABLE IF NOT EXISTS`` is a silent no-op
+        when the table already exists.  Therefore, ``_ensure_schema_columns``
+        is always called after create to handle the pre-existing table case.
+        """
+        assert self._client is not None
+
+        fields = self._build_schema_fields()
+
+        try:
+            if self._client.has_collection(self._collection_name):
+                # Collection exists — patch missing columns and ensure auto-id.
+                self._ensure_schema_columns(fields)
+                self._ensure_auto_id_sequence()
+                return
+        except Exception as e:
+            # pyvastbase 0.2.7 has_collection has known edge cases
+            # (e.g. unexpected keyword argument 'using');
+            # fall through to create_collection which handles "already exists".
+            _logger.debug("has_collection check failed (%s); attempting create", e)
+
         schema = CollectionSchema(name=self._collection_name, fields=fields)
-        created = False
         try:
             self._client.create_collection(self._collection_name, schema=schema)
-            created = True
         except Exception as e:
             err_lower = str(e).lower()
             if "already exist" not in err_lower and "duplicate" not in err_lower:
                 raise
-            # Collection already exists — ensure required fields are present.
-            # A stale collection from a previous run may have an older schema
-            # (e.g. missing ref_doc_id).  Use add_collection_field to patch.
-            for field in fields:
-                if field.name == "id":
-                    continue  # skip primary key
-                try:
-                    self._client.add_collection_field(
-                        self._collection_name, field.name, field.dtype
-                    )
-                except Exception:
-                    pass  # field already exists or unsupported — ignore
             _logger.debug(
-                "Collection '%s' already exists; schema patched",
+                "Collection '%s' already exists (create raised)",
                 self._collection_name,
             )
+
+        # Always patch schema columns: CREATE TABLE IF NOT EXISTS is a
+        # silent no-op for pre-existing tables with stale schemas, and
+        # the has_collection path above may have been skipped due to the
+        # pyvastbase API bug.  ALTER TABLE ADD COLUMN IF NOT EXISTS is
+        # idempotent — no-op for columns that already exist.
+        self._ensure_schema_columns(fields)
 
         # pyvastbase FieldSchema(auto_id=True) excludes "id" from INSERT but
         # does NOT generate auto-increment DDL (no SERIAL / IDENTITY / DEFAULT).
@@ -445,6 +457,105 @@ class VastbaseVectorStore(BasePydanticVectorStore):
         except Exception as e:
             _logger.warning(
                 "Failed to create auto-id sequence for '%s': %s",
+                self._collection_name,
+                e,
+            )
+
+    def _ensure_schema_columns(self, fields: list) -> None:
+        """Ensure all required columns exist in the collection table.
+
+        Uses ``ALTER TABLE … ADD COLUMN IF NOT EXISTS`` via a dedicated
+        psycopg connection.  This patches stale collections created by
+        older adapter versions that may be missing columns such as
+        ``ref_doc_id`` or ``id``.
+
+        Unlike pyvastbase's ``add_collection_field`` (which lacks the
+        ``@with_executor`` decorator and fails silently), this method
+        executes raw SQL directly.
+        """
+        import psycopg
+
+        # Map DataType enum → PostgreSQL type name
+        type_map = {
+            DataType.INT64: "BIGINT",
+            DataType.VARCHAR: "VARCHAR({max_length})",
+            DataType.TEXT: "TEXT",
+            DataType.JSON: "JSONB",
+            DataType.FLOAT_VECTOR: "VECTOR({dim})",
+            DataType.FLOAT16_VECTOR: "HALFVECTOR({dim})",
+        }
+
+        alter_statements = []
+        for field in fields:
+            if field.name == "id":
+                # Primary key — use BIGINT, handled separately by
+                # _ensure_auto_id_sequence for the DEFAULT/sequence.
+                pg_type = "BIGINT"
+            else:
+                pg_type = type_map.get(field.dtype)
+                if pg_type is None:
+                    # Unknown dtype — try to_pg_type as fallback
+                    try:
+                        pg_type = field.dtype.to_pg_type(field.dtype)
+                    except Exception:
+                        _logger.debug(
+                            "Skipping field '%s': unsupported dtype %s",
+                            field.name, field.dtype,
+                        )
+                        continue
+                if "{max_length}" in pg_type:
+                    pg_type = pg_type.format(max_length=field.max_length or 256)
+                if "{dim}" in pg_type:
+                    pg_type = pg_type.format(dim=field.dim or self.embed_dim)
+
+            alter_statements.append((
+                field.name,
+                f'ALTER TABLE "{self._collection_name}" '
+                f"ADD COLUMN "
+                f'"{field.name}" {pg_type}',
+            ))
+
+        if not alter_statements:
+            return
+
+        try:
+            conn = psycopg.connect(
+                host=self.host,
+                port=self.port,
+                dbname=self.database,
+                user=self.user,
+                password=self.password,
+                autocommit=True,
+            )
+            try:
+                with conn.cursor() as cur:
+                    # Query existing columns to avoid ADD COLUMN errors
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = %s",
+                        (self._collection_name,),
+                    )
+                    existing_cols = {row[0] for row in cur.fetchall()}
+
+                    for col_name, sql in alter_statements:
+                        if col_name in existing_cols:
+                            continue  # Column already exists — skip
+                        try:
+                            cur.execute(sql)
+                        except Exception as col_err:
+                            # Type mismatch or other DDL error — log and continue.
+                            _logger.debug(
+                                "ADD COLUMN skipped for '%s': %s",
+                                col_name, col_err,
+                            )
+            finally:
+                conn.close()
+            _logger.debug(
+                "Schema columns ensured for '%s'", self._collection_name
+            )
+        except Exception as e:
+            _logger.warning(
+                "Failed to patch schema columns for '%s': %s",
                 self._collection_name,
                 e,
             )
