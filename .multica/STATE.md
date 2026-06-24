@@ -15,6 +15,8 @@
 | 7.5 | 开放决策识别 | ✅ 完成 | 2026-06-24 |
 | 7.6 | 决策落盘 + 状态汇报 | ✅ 完成 | 2026-06-24 |
 | 8 | deep-research 研究报告落盘 | ✅ 完成 | 2026-06-24 |
+| Phase 1 | eco-issue-analyst 需求分析 | ✅ 完成 | 2026-06-25 |
+| Plan-Check | 规划审查 | pending | — |
 
 ## 关键决策
 
@@ -24,8 +26,8 @@
 | D-02 | 依赖策略 | 驱动栈选择 | pyvastbase >= 0.2.7 |
 | D-03 | 错误处理 | 容错级别 | 默认宽松，支持严格模式切换 |
 | D-04 | 连接管理 | 连接生命周期 | 实例级连接，alias 隔离 |
-| D-05 | 全文搜索 | TEXT_SEARCH 实现 | 仅全文索引路径，hybrid_search=True 前提 |
-| D-06 | Filter操作符 | ?\| / ?& 兼容 | 假设兼容，集成测试验证 |
+| D-05 | 全文搜索 | TEXT_SEARCH 实现 | BM25 全文索引，hybrid_search=True 前提 |
+| D-06 | Filter操作符 | ?\| / ?& 兼容 | 客户端内存过滤回退 |
 | D-07 | 向量类型 | use_halfvec 策略 | 保持上游参数 + check_vb_version 检测 |
 | D-08 | 混合搜索 | HYBRID 实现 | pyvastbase native hybrid_search + RRFRanker |
 | D-09 | 架构方案 | 方案选择 | Collection-Centric Thin Wrapper（方案 1） |
@@ -37,7 +39,8 @@
 | Framework Profile | `.multica/profiles/llamaindex-profile.json` | 框架诊断报告 |
 | Open Decisions | `.multica/decisions/llamaindex-decisions.yaml` | 技术决策记录 |
 | Deep-Research 报告 | `.multica/research/llamaindex-research.md` | 深度研究报告（中文） |
-| Design Spec | `.multica/docs/superpowers/spec/llamaindex-spec.md` | 需求规格与方案设计 |
+| Design Spec | `.multica/specs/llamaindex-spec.md` | 需求规格与方案设计 |
+| Implementation Plan | `.multica/plans/llamaindex-plan.md` | 实施计划（TDD, 10 tasks） |
 
 ## 框架诊断摘要
 
@@ -52,4 +55,4 @@
 
 ## 下一步
 
-框架诊断完成，进入「需求分析中」。
+需求分析完成，Spec + Plan 已落盘。进入「规划审查中」，等待 Plan-Check。
