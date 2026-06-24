@@ -16,6 +16,7 @@
 | 7.6 | 决策落盘 + 状态汇报 | ✅ 完成 | 2026-06-24 |
 | 8 | deep-research 研究报告落盘 | ✅ 完成 | 2026-06-24 |
 | Phase 1 | eco-issue-analyst 需求分析 | ✅ 完成 | 2026-06-25 |
+| Convention | convention-extractor 编码规范提取 | ✅ 完成 | 2026-06-25 |
 | Plan-Check | 规划审查 | pending | — |
 
 ## 关键决策
@@ -41,6 +42,7 @@
 | Deep-Research 报告 | `.multica/research/llamaindex-research.md` | 深度研究报告（中文） |
 | Design Spec | `.multica/specs/llamaindex-spec.md` | 需求规格与方案设计 |
 | Implementation Plan | `.multica/plans/llamaindex-plan.md` | 实施计划（TDD, 10 tasks） |
+| Convention Spec | `.multica/conventions/llamaindex-conventions.yaml` | 编码规范（adapter-dev / code-reviewer 消费） |
 
 ## 框架诊断摘要
 
@@ -55,4 +57,4 @@
 
 ## 下一步
 
-需求分析完成，Spec + Plan 已落盘。进入「规划审查中」，等待 Plan-Check。
+编码规范提取完成，Convention Spec 已落盘。进入「测试规划中」，等待 test-planner。

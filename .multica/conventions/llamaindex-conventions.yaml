@@ -1,0 +1,192 @@
+meta:
+  framework: "llamaindex"
+  component: "vector_store"
+  upstream_ref: "https://github.com/run-llama/llama_index (llama-index-vector-stores-postgres v0.8.1)"
+  extracted_at: "2026-06-25T00:30:00Z"
+  extractor_version: "2.0"
+
+project_structure:
+  package_naming: "llama-index-vector-stores-<backend>"
+  module_layout:
+    - path: "llama_index/vector_stores/<backend>/"
+      files:
+        - "__init__.py"
+        - "base.py"
+    - path: "tests/"
+      files:
+        - "conftest.py"
+        - "test_<feature>.py"
+  file_naming: "snake_case"
+  init_export_pattern: "from llama_index.vector_stores.<backend>.base import <Backend>VectorStore; __all__ = ['<Backend>VectorStore']"
+  pyproject_requires:
+    python: ">=3.10"
+    core_dependency_pattern: "llama-index-core>=0.13.0,<0.15"
+  pyproject_extra:
+    llamahub_section: true
+    llamahub_import_path: "llama_index.vector_stores.<backend>"
+    llamahub_class_authors:
+      "<Backend>VectorStore": "llama-index"
+    contains_example: false
+  pytest_config:
+    asyncio_mode: "auto"
+    filterwarnings:
+      - "ignore::DeprecationWarning"
+
+code_style:
+  imports:
+    order:
+      - "stdlib"
+      - "third_party"
+      - "framework_core"
+      - "framework_utils"
+    grouping: "one_import_per_line_for_typing"
+    from_future_annotations: false
+    notes:
+      - "stdlib imports (logging, re, typing) come first"
+      - "third-party (asyncpg, pgvector, psycopg2, sqlalchemy) next"
+      - "llama_index.core imports last"
+      - "no `from __future__ import annotations` observed"
+      - "some imports deferred inside methods (e.g., `from sqlalchemy import create_engine` inside `_connect()`)"
+  naming:
+    class: "CamelCase"
+    main_class_pattern: "<Backend>VectorStore"
+    method: "snake_case"
+    private_method: "_snake_case"
+    constant: "UPPER_SNAKE_CASE"
+    internal_tuple: "DBEmbeddingRow (NamedTuple)"
+    logger: "_logger = logging.getLogger(__name__)"
+  type_annotations:
+    style: "typing_module_explicit"
+    optional_style: "Optional[X]"
+    union_style: "Union[X, Y]"
+    dict_type: "Dict[str, Any]"
+    list_type: "List[X]"
+    sequence_type: "Sequence[BaseNode]"
+    any_usage: "heavy — used for engine, session, table_class, client return"
+    literal_type: "Literal[...] for constrained string sets (e.g., PGType)"
+    notes:
+      - "No `from __future__ import annotations`"
+      - "Uses `Optional[X]` consistently, NOT `X | None`"
+      - "`Any` used for database engine/session/table types"
+      - "`Callable` used for callback/hook parameters"
+  docstring:
+    style: "google"
+    sections:
+      - "Args"
+      - "Returns"
+      - "Raises"
+    class_docstring_pattern: "Short description + Examples section with pip install + python code block"
+    method_docstring_pattern: "Short description + Args section with (type, optional): description. Defaults to X."
+    constructor_docstring: "Full Args listing with types and defaults"
+    args_format: "param_name (Type, optional): Description. Defaults to value."
+  pydantic_patterns:
+    private_attr: "PrivateAttr() / PrivateAttr(default=None)"
+    model_config: "ConfigDict(arbitrary_types_allowed=True) inherited from BaseComponent"
+    field_declarations: "Pydantic field declarations as class attributes (no Field())"
+
+api_patterns:
+  factory_methods:
+    - name: "from_params"
+      pattern: "@classmethod accepting individual connection params (host, port, database, user, password) → constructs connection strings → calls cls() with constructed strings"
+      returns: "instance of self"
+    - name: "class_name"
+      pattern: "@classmethod returning string class name (e.g., 'PGVectorStore')"
+      returns: "str"
+  constructor_pattern:
+    style: "explicit __init__ with all params as keyword args with defaults"
+    super_call: "super().__init__(**field_kwargs) passing all Pydantic fields"
+    post_init: "set up _base, _table_class, and other PrivateAttrs after super().__init__"
+  initialization_pattern:
+    name: "_initialize"
+    style: "lazy_init_with_flag"
+    description: "Called at the start of every public method. Checks _is_initialized flag, calls _connect() and setup methods, sets flag to True."
+    error_handling: "try/except per setup step, _logger.warning on error, raise only if initialization_fail_on_error=True"
+  error_handling:
+    pattern: "configurable_leniency"
+    description: "Default lenient mode (initialization_fail_on_error=False): errors logged as warnings but don't stop execution. Strict mode: errors propagate."
+    custom_exceptions: false
+    exception_types:
+      - "ValueError for invalid parameters/modes"
+      - "NotImplementedError for unsupported features (persist)"
+    unknown_operator_fallback: "_logger.warning + fallback to '=' operator"
+  connection_management:
+    pattern: "lazy_connect_with_flag"
+    description: "Connection established in _connect() called from _initialize(). Both sync and async engines created. _is_initialized flag prevents re-initialization."
+    close_pattern: "async close() method that disposes both engines"
+  async_strategy:
+    pattern: "native_async"
+    description: "Full sync + async parity. Async methods are native async def, using async session/engine. No asyncio.to_thread wrapping for sync methods."
+    sync_async_pairing: "Every sync public method has an async counterpart (add/async_add, delete/adelete, query/aquery, etc.)"
+    async_hybrid: "asyncio.gather() for parallel dense+sparse queries"
+  query_modes:
+    - mode: "DEFAULT"
+      implementation: "cosine_distance search → similarity = 1 - distance"
+    - mode: "SPARSE / TEXT_SEARCH"
+      implementation: "full-text search (backend-specific)"
+    - mode: "HYBRID"
+      implementation: "dense + sparse → dedup/merge results"
+    - mode: "MMR"
+      implementation: "prefetch N×top_k → get_top_k_mmr_embeddings → rerank → fallback to regular"
+  filter_operator_translation:
+    pattern: "if/elif chain mapping FilterOperator → backend-specific operator string"
+    fallback: "unknown operator → _logger.warning + fallback to default"
+  private_method_prefixes:
+    - "_build_ (query construction)"
+    - "_query_ / _aquery_ (query execution)"
+    - "_to_ (operator/type translation)"
+    - "_apply_ (filter/limit application)"
+    - "_node_to_ (node serialization)"
+    - "_db_rows_to_ (result deserialization)"
+    - "_create_ (schema/index setup)"
+    - "_connect (connection setup)"
+    - "_initialize (lazy init)"
+
+serialization:
+  node_roundtrip: "node_to_metadata_dict(node, remove_text=True, flat_metadata=False) → metadata_dict_to_node(metadata_dict)"
+  metadata_storage: "JSON or JSONB column named 'metadata_'"
+  text_storage: "VARCHAR column named 'text'"
+  embedding_storage: "Vector(embed_dim) or HalfVec(embed_dim) column"
+  json_handling: "metadata dict serialized via framework utils (node_to_metadata_dict / metadata_dict_to_node)"
+  column_types:
+    primary_key: "BIGINT (autoincrement)"
+    node_id: "VARCHAR"
+    text: "VARCHAR (nullable=False)"
+    metadata: "JSON or JSONB"
+    embedding: "Vector(embed_dim) or HalfVec(embed_dim)"
+    text_search: "TSVECTOR (computed column, only when hybrid_search=True)"
+  similarity_computation: "similarity = (1 - distance) if distance is not None else 0"
+  db_row_type: "NamedTuple (DBEmbeddingRow) with fields: node_id, text, metadata, custom_fields, similarity"
+
+test_conventions:
+  framework: "pytest"
+  async_plugin: "pytest-asyncio"
+  asyncio_mode: "auto"
+  fixture_pattern: "mix of session_scoped (for expensive setup) and function_scoped (for isolation)"
+  mock_strategy: "real_db_with_test_table"
+  naming:
+    file: "test_<feature>.py"
+    class: "Test<ClassName> (when using classes)"
+    function: "test_<behavior_being_tested>"
+    fixture: "snake_case descriptive names"
+  conftest_location: "tests/conftest.py"
+  test_categories:
+    - name: "unit"
+      description: "Collection init, CRUD, filter translation, query modes"
+      requires_db: false
+    - name: "async"
+      description: "Async API parity tests (async_add, aquery, adelete, etc.)"
+      requires_db: true
+    - name: "integration"
+      description: "E2E tests against real database instance"
+      requires_db: true
+    - name: "framework_integration"
+      description: "Tests verifying integration with LlamaIndex framework components"
+      requires_db: true
+  coverage_target: 0.85
+
+_confidence:
+  project_structure: "observed"
+  code_style: "observed"
+  api_patterns: "observed"
+  serialization: "observed"
+  test_conventions: "inferred"
